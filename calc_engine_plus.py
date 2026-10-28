@@ -658,3 +658,37 @@ def generar_tabla_balance_neto(R, objetivo='max'):
                  'Tipo de Efecto': 'Balance Neto'})
                  
     return pd.DataFrame(rows)
+
+def obtener_formulas_utilizadas(R):
+    """Devuelve un diccionario con las fórmulas estadísticas utilizadas en el análisis."""
+    eq_str = _ecuacion_str(R) or "No disponible (ningún término significativo)"
+    
+    # Construir la fórmula de Statsmodels
+    terms = R.get('terms_included', list(R['effects'].keys()))
+    parts = []
+    for f in R['factores']:
+        if f in terms: parts.append(f'Q("{f}")')
+    for t in terms:
+        if '*' in t:
+            parts.append(':'.join(f'Q("{f}")' for f in t.split('*')))
+            
+    formula = 'Q("Y") ~ ' + ' + '.join(parts) if parts else 'Q("Y") ~ 1'
+    if R.get('tiene_bloques'): 
+        formula = 'Q("Y") ~ Q("Grupo") + ' + formula.split('~')[1].strip()
+    if R.get('tiene_centro'): 
+        formula += ' + Q("Curvatura")'
+
+    # Diccionario de fórmulas para mostrar
+    formulas = {
+        "Ecuación de Regresión Ajustada": eq_str,
+        "Fórmula del Modelo (Statsmodels)": formula,
+        "Error Estándar del Coeficiente (SE)": "SE = √(CM_residual / n)",
+        "Estadístico t (Significancia)": "t = Coeficiente / SE",
+        "Estadístico F (ANOVA)": "F = CM_efecto / CM_residual",
+        "Estimación de Lenth (PSE)": "PSE = 1.5 * mediana(|efectos| < 2.5 * s0)",
+        "Grados de Libertad (Lenth)": "df_t = m / 3"
+    }
+    return formulas
+
+
+
