@@ -1,4 +1,4 @@
-# app.py
+# app_plus.py
 # Interfaz Streamlit con flujo tipo Minitab
 
 import streamlit as st
