@@ -1,4 +1,4 @@
-# app.py
+# app_plus.py
 # Interfaz Streamlit con flujo tipo Minitab
 
 import streamlit as st
@@ -10,7 +10,7 @@ import zipfile
 from datetime import date
 from docx import Document
 
-import calc_engine as ce
+import calc_engine_plus as ce
 
 from docx.shared import Inches
 
