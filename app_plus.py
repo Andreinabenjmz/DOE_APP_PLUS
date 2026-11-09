@@ -433,8 +433,18 @@ elif st.session_state.stage == 'full_model':
     st.title("Paso 2 - Modelo completo")
     # ... (el resto de tu código sigue igual)
 
-    if st.button("Ir a Modelo completo", type='primary'):
-        st.session_state.stage = 'full_model'; st.rerun()
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    
+    if c1.button("⬅️ Volver a Datos / Simulación", use_container_width=True):
+        st.session_state.stage = 'upload'
+        st.session_state.df = None 
+        st.session_state.R_full = None
+        st.rerun()
+        
+    if c2.button("Ir a Modelo completo ➡️", type='primary', use_container_width=True):
+        st.session_state.stage = 'full_model'
+        st.rerun()
 
 elif st.session_state.stage == 'full_model':
     st.title("Paso 2 - Modelo completo")
