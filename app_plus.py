@@ -122,8 +122,8 @@ with st.sidebar:
         st.markdown("### Columnas")
         fact_cands, resp_cands, _ = _detectar_columnas(raw)
 
-        cols = st.multiselect("Factores", raw.columns.tolist(), default=fact_cands)
-        resp = st.multiselect("Respuesta(s)", raw.columns.tolist(), default=resp_cands)
+        cols = st.multiselect("Factores", raw.columns.tolist(), default=fact_cands, key="mis_factores")
+        resp = st.multiselect("Respuesta(s)", raw.columns.tolist(), default=resp_cands, key="mi_respuesta")
 
         # --- PANEL PARA RENOMBRAR ---
         mapping_nombres = {}
