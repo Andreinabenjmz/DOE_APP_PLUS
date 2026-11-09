@@ -874,11 +874,10 @@ def _gen_superficie_3d(R):
     ax1.set_zlim(limite_inf, limite_sup)
     fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5, extend='both')
     
-    
     # --- GRÁFICO 2D (CURVAS DE NIVEL) ---
     ax2 = fig.add_subplot(122)
     
-    # Reducimos a 6 niveles (menos líneas, más limpias)
+    # Reducimos a 6 niveles para que las líneas estén separadas
     niveles = np.linspace(z_min, z_max, 6)
     
     # 1. Fondo de colores
@@ -887,10 +886,13 @@ def _gen_superficie_3d(R):
     # 2. Dibujamos las líneas blancas
     lineas = ax2.contour(X, Y, Z, levels=niveles, colors='white', linewidths=1.2, alpha=1.0)
     
-    # 3. Etiquetas blancas con borde negro (con más espacio para que no se corten)
+    # 3. Etiquetas blancas con borde negro (SIN colors ni fontweight en clabel)
     import matplotlib.patheffects as path_effects
-    txt = ax2.clabel(lineas, inline=True, inline_spacing=5, fontsize=9, fmt='%.2f', colors='white', fontweight='bold')
+    txt = ax2.clabel(lineas, inline=True, inline_spacing=5, fontsize=9, fmt='%1.2f')
+    
     for t in txt:
+        t.set_fontweight('bold')
+        t.set_color('white')
         t.set_path_effects([path_effects.withStroke(linewidth=2, foreground='black')])
     # ---------------------------------
     
