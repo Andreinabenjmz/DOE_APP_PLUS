@@ -874,19 +874,24 @@ def _gen_superficie_3d(R):
     ax1.set_zlim(limite_inf, limite_sup)
     fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5, extend='both')
     
+    
     # --- GRÁFICO 2D (CURVAS DE NIVEL) ---
     ax2 = fig.add_subplot(122)
-    niveles = np.linspace(z_min, z_max, 20)
+    
+    # Reducimos a 6 niveles (menos líneas, más limpias)
+    niveles = np.linspace(z_min, z_max, 6)
     
     # 1. Fondo de colores
     contour_f = ax2.contourf(X, Y, Z, levels=niveles, cmap='viridis', extend='both')
     
-    # --- NUEVO: LÍNEAS DE CONTORNO ---
     # 2. Dibujamos las líneas blancas
-    lineas = ax2.contour(X, Y, Z, levels=niveles, colors='white', linewidths=0.8, alpha=0.7)
+    lineas = ax2.contour(X, Y, Z, levels=niveles, colors='white', linewidths=1.2, alpha=1.0)
     
-    # 3. Les ponemos los números encima
-    ax2.clabel(lineas, inline=True, fontsize=8, fmt='%.1f')
+    # 3. Etiquetas blancas con borde negro (con más espacio para que no se corten)
+    import matplotlib.patheffects as path_effects
+    txt = ax2.clabel(lineas, inline=True, inline_spacing=5, fontsize=9, fmt='%.2f', colors='white', fontweight='bold')
+    for t in txt:
+        t.set_path_effects([path_effects.withStroke(linewidth=2, foreground='black')])
     # ---------------------------------
     
     ax2.scatter(x_opt, y_opt, color='red', marker='*', s=200, zorder=10, label='Óptimo Predicho')
