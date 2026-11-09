@@ -312,20 +312,34 @@ def calcular_via3(df, factores):
 # ---------- Graficos ----------
 def _gen_pareto(R):
     terms = list(R['effects'].keys())
-    if R['via'] == VIA_3:
-        tvals = [abs(R['effects'][n]['efecto'])/max(R['lenth']['PSE'],1e-9) for n in R['effects']]
-    else:
-        tvals = [abs(R['effects'][n]['F']**0.5) if pd.notna(R['effects'][n].get('F'))
-                 else abs(R['effects'][n]['efecto'])/max(R['lenth']['PSE'],1e-9)
-                 for n in R['effects']]
+    
+    # --- INICIO DEL ARREGLO ---
+    tvals = []
+    for n in R['effects']:
+        F_val = R['effects'][n].get('F')
+        if pd.notna(F_val) and F_val > 0:
+            t = F_val**0.5
+        else:
+            # Si F es NaN o negativo, usamos el efecto crudo
+            t = abs(R['effects'][n]['efecto']) / max(R['lenth']['PSE'], 1e-9)
+        
+        # Si el resultado es infinito (por falta de ruido), lo limitamos a 50
+        if not np.isfinite(t):
+            t = 50
+            
+        tvals.append(t)
+    # --- FIN DEL ARREGLO ---
+
     pvals = [R['effects'][n]['p'] if pd.notna(R['effects'][n].get('p'))
              else (0.01 if R['effects'][n].get('activo') else 0.5) for n in R['effects']]
     if R['tiene_centro']:
-        terms.append('Curvatura'); tvals.append(abs(R['F_curv']**0.5)); pvals.append(R['p_curv'])
+        terms.append('Curvatura'); tvals.append(abs(R['F_curv']**0.5) if np.isfinite(R['F_curv']) else 50); pvals.append(R['p_curv'])
+        
     order = np.argsort(tvals)
     fig, ax = plt.subplots(figsize=(10, max(4, 0.35*len(terms)+2)))
     colors = ['#d9534f' if p<0.05 else '#7fb3d5' for p in np.array(pvals)[order]]
     ax.barh([terms[i] for i in order], [tvals[i] for i in order], color=colors, edgecolor='black')
+    
     if R['via'] == VIA_3:
         umb = R['lenth']['ME']/max(R['lenth']['PSE'],1e-9); lab = f'ME/PSE = {umb:.2f} (Lenth)'
     else:
