@@ -247,7 +247,7 @@ with st.sidebar:
                         if len(vals) == 2:
                             lo, hi = min(vals), max(vals)
                             rp[f] = rp[f].map({lo: -1, hi: 1})
-                
+
                 # --- NUEVO: APLICAR SIMULACIÓN AQUÍ ADENTRO ---
                 if simular_datos:
                     # Creamos la columna Y aplicando la ecuación
