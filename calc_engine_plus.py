@@ -822,19 +822,16 @@ def _gen_superficie_3d(R):
     if R['via'] == VIA_3:
         return None
         
-    # 1. Elegir los dos factores más importantes (usualmente A y C, o A y B)
     factores = R['factores']
     if len(factores) < 2:
         return None
         
     f1, f2 = factores[0], factores[2] # A y C
     
-    # 2. Crear una malla (grid) de valores entre -1 y 1
     x = np.linspace(-1, 1, 50)
     y = np.linspace(-1, 1, 50)
     X, Y = np.meshgrid(x, y)
     
-    # 3. Calcular la respuesta Z usando los coeficientes del modelo
     Z = np.full_like(X, R['y_bar']) 
     
     if f1 in R['effects']:
@@ -842,15 +839,19 @@ def _gen_superficie_3d(R):
     if f2 in R['effects']:
         Z += R['effects'][f2]['coef'] * Y
         
-    term_curv = f"{f1}*{f1}"
-    if term_curv in R['effects']:
-        Z += R['effects'][term_curv]['coef'] * (X**2)
-        
+    # --- NUEVO: AGREGAR LA CURVATURA EXPLÍCITAMENTE ---
+    # Buscamos si la curvatura fue significativa en el ANOVA
+    if R.get('p_curv', 1) < 0.05:
+        # El coeficiente de curvatura en la ecuación es (yc_bar - yf_bar)
+        coef_curv = R['yc_bar'] - R['yf_bar']
+        Z += coef_curv * (X**2)
+    # --------------------------------------------------
+
+    # Interacciones (si existen)
     term_int = f"{f1}*{f2}"
     if term_int in R['effects']:
         Z += R['effects'][term_int]['coef'] * X * Y
         
-    # 4. Graficar
     fig = plt.figure(figsize=(14, 6))
     
     ax1 = fig.add_subplot(121, projection='3d')
