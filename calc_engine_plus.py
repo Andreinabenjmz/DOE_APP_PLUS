@@ -867,8 +867,8 @@ def _gen_superficie_3d(R):
     ax1.scatter(x_opt, y_opt, z_opt, color='red', marker='*', s=300, zorder=10, label='Óptimo Predicho')
     ax1.text(x_opt, y_opt, z_opt + margen, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
     ax1.legend()
-    ax1.set_xlabel(f1)
-    ax1.set_ylabel(f2)
+    ax1.set_xlabel(f"{f1} (coded)")
+    ax1.set_ylabel(f"{f2} (coded)")
     ax1.set_zlabel('Respuesta (Y)')
     ax1.set_title(f'Superficie: {f1} vs {f2}')
     ax1.set_zlim(limite_inf, limite_sup)
@@ -898,8 +898,9 @@ def _gen_superficie_3d(R):
     ax2.scatter(x_opt, y_opt, color='red', marker='*', s=200, zorder=10, label='Óptimo Predicho')
     ax2.text(x_opt, y_opt + 0.1, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
     ax2.legend(loc='upper right')
-    ax2.set_xlabel(f1)
-    ax2.set_ylabel(f2)
+    # Agregamos " (coded)" para indicar que los ejes están en escala -1 a 1
+    ax2.set_xlabel(f"{f1} (coded)")
+    ax2.set_ylabel(f"{f2} (coded)")
     ax2.set_title(f'Curvas de Nivel: {f1} vs {f2}')
     fig.colorbar(contour_f, ax=ax2, extend='both')
     
