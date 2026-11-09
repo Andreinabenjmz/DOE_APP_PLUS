@@ -1,4 +1,4 @@
-# app_plus.py
+# app.py
 # Interfaz Streamlit con flujo tipo Minitab
 
 import streamlit as st
@@ -10,7 +10,7 @@ import zipfile
 from datetime import date
 from docx import Document
 
-import calc_engine_plus as ce
+import calc_engine as ce
 
 from docx.shared import Inches
 
@@ -187,6 +187,7 @@ with st.sidebar:
                     cols = [mapping_nombres.get(c, c) for c in cols]
 
                 rp = raw.copy()
+                rp.insert(0, 'Corrida_ID', range(1, len(rp) + 1))
                 
                 # 2. Aplicar los niveles manuales del estudiante
                 for f in cols:
@@ -313,6 +314,17 @@ elif st.session_state.stage == 'full_model':
     """)
     
     st.dataframe(R['anova'].round(4), use_container_width=True)
+    st.markdown("### 2. Coeficientes del Modelo")
+    try:
+        coef_df, fit_df = ce.generar_tabla_regresion(df, R)
+        # En Vía 3, ocultamos el Error Est. y el Valor p porque son NaN
+        if via == ce.VIA_3:
+            st.dataframe(coef_df[['Término', 'Coef']].round(4), use_container_width=True)
+            st.info("💡 En la Vía 3, el modelo está saturado (sin grados de libertad de error). Por ello, solo se muestran los coeficientes estimados; los errores estándar y los valores p no están definidos.")
+        else:
+            st.dataframe(coef_df.round(4), use_container_width=True)
+    except Exception as e:
+        st.warning(f"No se pudieron mostrar los coeficientes: {e}")
     
     st.write(f"**R2 = {R['R2']:.4f}**" + (f" | **R2 ajustado = {R['R2_adj']:.4f}**" if R.get('R2_adj') else ""))
     st.caption("💡 **El R2** (de 0 a 1) indica qué porcentaje de la variabilidad total del proceso está explicada por el modelo. Un R2 mayor a 0.80 suele ser muy bueno.")
@@ -332,6 +344,17 @@ elif st.session_state.stage == 'full_model':
         if fn_curv: c2.image(fn_curv, caption="Gráfico de Curvatura", use_container_width=True)
 
     st.markdown("### 3. Diagrama de Pareto")
+    # --- NUEVO: Mostrar métricas de error según la vía ---
+    if via == ce.VIA_3:
+        if R.get('lenth', {}).get('valido'):
+            c1, c2 = st.columns(2)
+            c1.metric("Pseudo Error Estándar (PSE)", f"{R['lenth']['PSE']:.4f}")
+            c2.metric("Margen de Error (ME)", f"{R['lenth']['ME']:.4f}")
+            t_critico = R['lenth']['ME'] / R['lenth']['PSE']
+            st.info(f"💡 **Umbral |t| (Método de Lenth):** Se calcula dividiendo el ME entre el PSE ({R['lenth']['ME']:.4f} / {R['lenth']['PSE']:.4f} ≈ **{t_critico:.2f}**). Las barras que superan este valor son significativas.")
+    else:
+        st.info(f"💡 **Umbral |t| (Error Puro):** Se calcula usando los {R['df_resid']} grados de libertad del error. El valor crítico es **{R['t_crit']:.2f}**. Las barras que superan este valor son significativas.")
+    # -----------------------------------------------------------
     st.image(ce._gen_pareto(R), use_container_width=True)
 
     st.markdown("### 4. Grafico semi-normal (Daniel / Lenth)")
@@ -458,40 +481,16 @@ elif st.session_state.stage == 'refine':
         
         st.write(f"**R2 = {R_red['R2']:.4f}**" + (f" | **R2 ajustado = {R_red['R2_adj']:.4f}**" if R_red.get('R2_adj') else ""))
         
-        # --- INICIO EXTRA OPCIONAL: Intervalos de Confianza ---
-        with st.expander("🔬 Opcional (Nivel Avanzado): Coeficientes con Intervalos de Confianza"):
-            st.markdown("""
-            Esta tabla muestra el error estándar y el rango donde probablemente se encuentra el verdadero coeficiente.
-            **Si el intervalo NO incluye el cero**, el término es estadísticamente significativo.
-            """)
-            t_crit = R_red.get('t_crit', 2.0)
-            mse = R_red.get('MS_resid', 0)
-            N_total = R_red.get('N', 1)
-            err_est = np.sqrt(mse / N_total) if mse > 0 else 0
-            
-            coef_data = [{
-                'Término': 'Intercepto (β0)', 
-                'Coef': round(R_red['y_bar'], 4), 
-                'Error Est.': round(err_est, 4), 
-                't': np.nan, 
-                'IC 95% Inf': np.nan, 
-                'IC 95% Sup': np.nan
-            }]
-            
-            for term, e in R_red['effects'].items():
-                t_val = e['coef'] / err_est if err_est > 0 else 0
-                ic_inf = e['coef'] - (t_crit * err_est)
-                ic_sup = e['coef'] + (t_crit * err_est)
-                coef_data.append({
-                    'Término': term.replace('*', ' x '),
-                    'Coef': round(e['coef'], 4),
-                    'Error Est.': round(err_est, 4),
-                    't': round(t_val, 2),
-                    'IC 95% Inf': round(ic_inf, 4),
-                    'IC 95% Sup': round(ic_sup, 4)
-                })
-            st.dataframe(pd.DataFrame(coef_data), use_container_width=True)
-        # --- FIN EXTRA OPCIONAL ---
+        with st.expander("🔬 Coeficientes e intervalos de confianza (Opcional)"):
+            if R_red['via'] in (ce.VIA_1, ce.VIA_2):
+                # Usar Statsmodels para las Vías con réplicas/bloques
+                coef_df, _ = ce.generar_tabla_regresion(df, R_red)
+                st.dataframe(coef_df.round(4), use_container_width=True)
+            else:
+                # Usar solo los coeficientes para la Vía 3 (saturada)
+                coef_df, _ = ce.generar_tabla_regresion(df, R_red)
+                st.dataframe(coef_df[['Término', 'Coef']].round(4), use_container_width=True)
+                st.info("💡 En la Vía 3 (método de Lenth), el modelo está saturado y no tiene grados de libertad de error. Por ello, no es posible calcular intervalos de confianza convencionales; solo se muestran los coeficientes estimados.")
 
         with st.expander("🤔 Preguntas de reflexion para tu informe"):
             st.markdown("""
@@ -554,15 +553,27 @@ elif st.session_state.stage == 'diagnostics':
     Estas son las combinaciones que dieron los mejores resultados en el experimento. 
     *(Ordenadas de mayor a menor según la media de Y)*
     """)
-    
+
+
+
     # 1. Calcular medias por combinación
-    cond_medias = df[df['Curvatura']==0].groupby(st.session_state.factores)['Y'].mean().reset_index()
-    
-    # 2. Agregar el número de corrida (1 al N, en el orden original)
-    cond_medias.insert(0, 'Corrida', range(1, len(cond_medias)+1))
-    
+    if 'Corrida_ID' in df.columns:
+        cond_medias = df[df['Curvatura']==0].groupby(st.session_state.factores, sort=False).agg(
+            Corrida=('Corrida_ID', 'first'),
+            Y=('Y', 'mean')
+        ).reset_index()
+    else:
+        cond_medias = df[df['Curvatura']==0].groupby(st.session_state.factores, sort=False)['Y'].mean().reset_index()
+        if 'Corrida' not in cond_medias.columns:
+            cond_medias.insert(0, 'Corrida', range(1, len(cond_medias)+1))
+
+    # NUEVO: Calcular la predicción del modelo y la diferencia
+    cond_medias['Y_Predicho'] = cond_medias.apply(
+        lambda row: ce.predecir_y_combinacion(row.to_dict(), R), axis=1
+    )
+    cond_medias['Diferencia'] = cond_medias['Y'] - cond_medias['Y_Predicho']
+
     # 3. Ordenar y sacar el Top 5
-    # Ordenar según el objetivo (max = descendente, min = ascendente)
     es_min = st.session_state.get('objetivo', 'max') == 'min'
     cond_medias = cond_medias.sort_values(by='Y', ascending=es_min).head(5).reset_index(drop=True)
     
@@ -575,10 +586,13 @@ elif st.session_state.stage == 'diagnostics':
             if val == -1: fila[f] = "Nivel Bajo (-1)"
             elif val == 1: fila[f] = "Nivel Alto (+1)"
             else: fila[f] = "Centro (0)"
-        fila['Media de Y'] = round(row['Y'], 4)
+        fila['Media Real (Y)'] = round(row['Y'], 4)
+        fila['Predicción (Ecuación)'] = round(row['Y_Predicho'], 4)
+        fila['Diferencia (Residuo)'] = round(row['Diferencia'], 4)
         ranking_data.append(fila)
     
     st.dataframe(pd.DataFrame(ranking_data), use_container_width=True)
+    st.caption("💡 **Media Real:** Promedio de las réplicas en el laboratorio. **Predicción:** Valor calculado con la ecuación de regresión. **Diferencia:** Si es pequeña, el modelo predice con precisión.")
 
     with st.expander("🤔 Preguntas de reflexión (toma notas para tu informe)"):
         st.markdown("""
@@ -644,7 +658,12 @@ elif st.session_state.stage == 'diagnostics':
     # --- NUEVO: Auditoría de Fórmulas ---
     with st.expander("📐 Auditoría Técnica: Fórmulas Estadísticas Utilizadas"):
         st.markdown("""
-        Esta aplicación se apoya en las librerías **Statsmodels** y **SciPy**. A continuación, se detallan las fórmulas matemáticas que el programa utiliza internamente para calcular los resultados presentados:
+        Esta aplicación se apoya en las librerías estándar de Python **Statsmodels** y **SciPy** para calcular los resultados presentados. El programa utiliza dos enfoques estadísticos según el diseño experimental:
+        
+        1. **Mínimos Cuadrados Ordinarios (OLS):** Utilizado para ajustar la regresión lineal y el ANOVA (Vías 1 y 2) a través de **Statsmodels**, minimizando la suma de los errores al cuadrado.
+        2. **Método de Lenth:** Utilizado en diseños sin réplicas (Vía 3) para estimar un Pseudo Error Estándar (PSE) a partir de la mediana de los efectos, usando **SciPy** para las distribuciones probabilísticas.
+        
+        A continuación, se detallan las fórmulas matemáticas que el programa utiliza internamente para calcular los resultados:
         """)
         
         formulas = ce.obtener_formulas_utilizadas(R)
@@ -668,7 +687,16 @@ elif st.session_state.stage == 'report':
     slug = nombre.replace(' ', '_').replace('/', '-')
 
     st.markdown("### 1. Ecuacion de Regresion")
-    st.write(f"**Beta 0 (Media global / Intercepto)** = {R['y_bar']:.4f}")
+    
+        # --- INICIO DEL CAMBIO ---
+    if R['via'] == ce.VIA_2:
+        st.write(f"**Media global del experimento** = {R['y_bar']:.4f}")
+        st.write(f"**Intercepto base de la ecuación (Bloque 1)** = {R.get('intercepto_bloques', R['y_bar']):.4f}")
+        st.caption("Nota: La ecuación incluye los coeficientes de los Bloques 2 al 5. El intercepto base representa al Bloque 1.")
+    else:
+        st.write(f"**Beta 0 (Media global / Intercepto)** = {R['y_bar']:.4f}")
+    # --- FIN DEL CAMBIO ---
+
     eq = ce._ecuacion_str(R)
     if eq: 
         st.code(eq, language=None)
@@ -807,11 +835,29 @@ elif st.session_state.stage == 'report':
 
             # --- NUEVO: Ranking Top 5 ---
             doc.add_heading("2.5. Condiciones Recomendadas (Ranking)", level=2)
-            
+
+
+
             # Calcular el ranking para el Word
-            cond_medias_word = df[df['Curvatura']==0].groupby(st.session_state.factores)['Y'].mean().reset_index()
-            cond_medias_word.insert(0, 'Corrida', range(1, len(cond_medias_word)+1))
+            if 'Corrida_ID' in df.columns:
+                cond_medias_word = df[df['Curvatura']==0].groupby(st.session_state.factores, sort=False).agg(
+                    Corrida=('Corrida_ID', 'first'),
+                    Y=('Y', 'mean')
+                ).reset_index()
+            else:
+                cond_medias_word = df[df['Curvatura']==0].groupby(st.session_state.factores, sort=False)['Y'].mean().reset_index()
+                if 'Corrida' not in cond_medias_word.columns:
+                    cond_medias_word.insert(0, 'Corrida', range(1, len(cond_medias_word)+1))
+            
+            # NUEVO: Calcular predicción para el Word
+            cond_medias_word['Y_Predicho'] = cond_medias_word.apply(
+                lambda row: ce.predecir_y_combinacion(row.to_dict(), R), axis=1
+            )
+            cond_medias_word['Diferencia'] = cond_medias_word['Y'] - cond_medias_word['Y_Predicho']
+            
+            es_min = st.session_state.get('objetivo', 'max') == 'min'
             cond_medias_word = cond_medias_word.sort_values(by='Y', ascending=es_min).head(5).reset_index(drop=True)
+
             
             # Preparar la tabla para Word
             tabla_word = cond_medias_word.copy()
@@ -819,11 +865,18 @@ elif st.session_state.stage == 'report':
             
             # Reemplazar -1 y 1 por texto más amigable
             for f in st.session_state.factores:
-                tabla_word[f] = tabla_word[f].apply(lambda x: "Bajo (-1)" if x==-1 else ("Alto (+1)" if x==1 else "Centro (0)"))
+                tabla_word[f] = tabla_word[f].apply(lambda x: "-1" if x==-1 else "+1" if x==1 else "0")
                 
-            tabla_word = tabla_word.rename(columns={'Y': 'Media de Y'})
+            # Renombrar columnas
+            tabla_word = tabla_word.rename(columns={
+                'Y': 'Media Real', 
+                'Y_Predicho': 'Predicción',
+                'Diferencia': 'Diferencia'
+            })
             
             _insertar_tabla_word(doc, tabla_word)
+
+
             doc.add_paragraph("Recomendación operativa: [Escribe aquí la combinación que sugieres y por qué]")
             # -----------------------------
 
@@ -849,7 +902,12 @@ elif st.session_state.stage == 'report':
             doc.add_paragraph("Interpretación: [Analiza los 3 supuestos: normalidad, homocedasticidad e independencia]")
             
             doc.add_heading("2.9. Ecuación de regresión", level=2)
-            doc.add_paragraph(f"Beta 0 = {R['y_bar']:.4f}")
+            if R['via'] == ce.VIA_2:
+                doc.add_paragraph(f"Media global del experimento = {R['y_bar']:.4f}")
+                doc.add_paragraph(f"Intercepto base de la ecuación (Bloque 1) = {R.get('intercepto_bloques', R['y_bar']):.4f}")
+            else:
+                doc.add_paragraph(f"Beta 0 = {R['y_bar']:.4f}")
+                
             if eq: doc.add_paragraph(eq, style='Intense Quote')
             doc.add_paragraph("Interpretación de los coeficientes: [Explica qué significa cada término en la ecuación]")
        

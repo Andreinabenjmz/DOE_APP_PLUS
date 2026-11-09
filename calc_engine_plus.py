@@ -1,4 +1,4 @@
-# calc_engine_plus.py
+# calc_engine.py
 # Motor de cálculo y gráficos — sin dependencias de Streamlit ni Colab
 
 import pandas as pd
@@ -31,25 +31,64 @@ VIA_INFO = {
 def calcular_lenth(effects, df_resid=None):
     vals = np.array([e['efecto'] for e in effects.values()])
     abs_eff = np.abs(vals); m = len(abs_eff)
+    
     if m == 0:
-        return {'m': 0, 'PSE': 0, 'ME': 0, 'SME': 0, 'df_t': m}
+        return {
+            'm': 0, 'PSE': np.nan, 'ME': np.nan, 'SME': np.nan, 'df_t': 0,
+            'valido': False, 'mensaje': 'No se encontraron efectos para analizar.'
+        }
+        
     s0 = 1.5 * np.median(abs_eff)
     sub = abs_eff[abs_eff < 2.5 * s0]
     s1 = 1.5 * np.median(sub) if len(sub) > 0 else s0
-    PSE = max(s1, 1e-9)
+    
+    if s1 <= 0:
+        PSE = np.nan
+    else:
+        PSE = s1
+        
     df_t = df_resid if (df_resid is not None and df_resid >= 1) else m
+    
+    # Verificación de seguridad
+    if not np.isfinite(PSE) or PSE <= 0:
+        return {
+            'm': m,
+            'PSE': np.nan,
+            'ME': np.nan,
+            'SME': np.nan,
+            'df_t': m / 3,
+            'valido': False,
+            'mensaje': 'No se pudo estimar un PSE positivo.'
+        }
+        
     ME = stats.t.ppf(0.975, df_t) * PSE
     gamma = 0.5 * (1 + 0.95**(1.0/m))
     SME = stats.t.ppf(gamma, df_t) * PSE
-    return {'m': m, 'PSE': PSE, 'ME': ME, 'SME': SME, 'df_t': df_t}
 
-# ---------- Preparacion ----------
+    return {
+        'm': m,
+        'PSE': PSE,
+        'ME': ME,
+        'SME': SME,
+        'df_t': df_t,
+        'valido': True,
+        'mensaje': 'Cálculo exitoso.'
+    }
+
+
+# ---------- Preparacion ---------------------
 def preparar_datos(raw, factores, respuestas):
     tmp = raw.copy()
     cg = '__G__'; cy = '__Y__'
     while cg in tmp.columns: cg += '_'
     while cy in tmp.columns: cy += '_'
-    df = pd.melt(tmp, id_vars=factores, value_vars=respuestas,
+    
+    # NUEVO: Incluir Corrida_ID si existe
+    id_vars = factores.copy()
+    if 'Corrida_ID' in tmp.columns:
+        id_vars.append('Corrida_ID')
+        
+    df = pd.melt(tmp, id_vars=id_vars, value_vars=respuestas,
                  var_name=cg, value_name=cy).rename(columns={cg:'Grupo', cy:'Y'})
     df['Curvatura'] = df[factores].apply(
         lambda r: 1 if all(v==0 for v in r) else 0, axis=1)
@@ -212,6 +251,13 @@ def calcular_via3(df, factores):
     SS_t = (df['Y']**2).sum() - G**2/N
     ef = _calc_effects(df, factores, Nf=N)
     L = calcular_lenth(ef, df_resid=0)
+    if not L['valido']:
+        raise ValueError(
+            "No se puede determinar qué efectos están activos. "
+            + L['mensaje']
+        )
+
+    for n_, e in ef.items(): e['activo'] = abs(e['efecto']) > L['ME']
     for n_, e in ef.items(): e['activo'] = abs(e['efecto']) > L['ME']
     act = [n_ for n_, e in ef.items() if e['activo']]
     ina = [n_ for n_, e in ef.items() if not e['activo']]
@@ -691,4 +737,17 @@ def obtener_formulas_utilizadas(R):
     return formulas
 
 
-
+def predecir_y_combinacion(niveles, R):
+    """Calcula el Y predicho para una combinación usando los coeficientes del modelo."""
+    y_pred = R['y_bar']  # Partimos de la media general
+    terms = R.get('terms_included', list(R['effects'].keys()))
+    
+    for term in terms:
+        if term not in R['effects']: continue
+        coef = R['effects'][term]['coef']
+        val = 1
+        for f in term.split('*'):
+            val *= niveles[f]  # Multiplica los niveles (-1 o +1)
+        y_pred += coef * val  # Suma el efecto del término
+        
+    return y_pred
