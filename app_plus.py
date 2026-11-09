@@ -259,10 +259,9 @@ with st.sidebar:
                                       bE * rp[cols[4]] + 
                                       bAA * (rp[cols[0]]**2))
                     
-                    # Añadimos el ruido gaussiano (solo a las esquinas, no a los centros)
-                    es_centro = rp[cols].eq(0).all(axis=1)
+                    # Añadimos el ruido gaussiano a TODOS los puntos (esquinas y centros)
                     ruido_aleatorio = np.random.normal(0, ruido, len(rp))
-                    rp.loc[~es_centro, 'Y_simulado'] += ruido_aleatorio[~es_centro]
+                    rp['Y_simulado'] += ruido_aleatorio
                     
                     # Recortar al rango biológico
                     rp['Y_simulado'] = np.clip(rp['Y_simulado'], y_min, y_max)
