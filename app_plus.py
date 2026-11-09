@@ -824,7 +824,9 @@ elif st.session_state.stage == 'diagnostics':
     st.markdown("Este gráfico muestra cómo interactúan los dos primeros factores (A y C) manteniendo los demás fijos.")
     
     # Llamamos a la función y capturamos los 4 valores que retorna
-    fn_surf, x_opt, y_opt, z_opt = ce._gen_superficie_3d(R)
+    # Obtener el nombre de la respuesta que seleccionaste en el Excel
+    resp_name = st.session_state.respuesta[0] if 'respuesta' in st.session_state and st.session_state.respuesta else 'Respuesta'
+    fn_surf, x_opt, y_opt, z_opt = ce._gen_superficie_3d(R, resp_name=resp_name)
     
     if fn_surf and os.path.exists(fn_surf):
         st.image(fn_surf, use_container_width=True)
