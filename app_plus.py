@@ -252,7 +252,6 @@ if st.session_state.stage == 'upload':
     Al igual que en Minitab, la app te da los numeros, pero las decisiones son tuyas.
     """)
     st.info("Empieza subiendo un archivo en la barra lateral")
-
 elif st.session_state.stage == 'design':
     df = st.session_state.df
     factores = st.session_state.factores
@@ -261,12 +260,13 @@ elif st.session_state.stage == 'design':
     
     n_grupos = df['Grupo'].nunique()
     n_total = len(df)
-    n_esquinas = 2 ** len(factores)
+    n_esquinas = len(df[df['Curvatura']==0]) // n_grupos if n_grupos > 0 else len(df[df['Curvatura']==0])
+    n_centros = len(df[df['Curvatura']==1]) // n_grupos if n_grupos > 0 else len(df[df['Curvatura']==1])
+    
     if via == ce.VIA_1:
         expl = f"N = {n_total} = {n_esquinas} esquinas x {n_grupos} replicas puras"
     elif via == ce.VIA_2:
-        n_centros = int(df['Curvatura'].sum() / n_grupos) if n_grupos else 0
-        expl = f"N = {n_total} = {n_esquinas + n_centros} puntos ({n_esquinas} esquinas + {n_centros} centro) x {n_grupos} bloques"
+        expl = f"N = {n_total} = {n_esquinas + n_centros} puntos ({n_esquinas} esquinas + {n_centros} centros) x {n_grupos} bloque(s)"
     else:
         expl = f"N = {n_total} = {n_esquinas} esquinas (sin replicas)"
 
@@ -277,10 +277,20 @@ elif st.session_state.stage == 'design':
     c4.metric("Via", via)
     
     st.info(f"**De donde viene N:** {expl}")
+    
     cond = df[df['Curvatura']==0][factores].drop_duplicates().reset_index(drop=True)
     cond.insert(0, 'Condicion', range(1, len(cond)+1))
     st.markdown("### Combinaciones del diseno")
     st.dataframe(cond, use_container_width=True)
+
+    # --- NUEVO: MOSTRAR ALIAS ---
+    st.markdown("---")
+    st.markdown("### 🕵️ Estructura de Alias (Confundimiento)")
+    st.markdown("El programa ha detectado automáticamente qué efectos comparten la misma columna matemática en este diseño fraccionado:")
+    df_alias = ce.generar_tabla_alias(df, factores)
+    st.dataframe(df_alias, use_container_width=True)
+    # ----------------------------
+
     if st.button("Ir a Modelo completo", type='primary'):
         st.session_state.stage = 'full_model'; st.rerun()
 
