@@ -152,7 +152,7 @@ def calcular_via1_con_terminos(df, factores, terms=None):
     SS_t = (df['Y']**2).sum() - G**2/N
     ef_all = _calc_effects(df, factores, Nf)
     if terms is None:
-        terms = list(ef_all.keys())
+        terms = [t for t in ef_all.keys() if len(t.split('*')) <= 2]
     ef = {t: ef_all[t] for t in terms if t in ef_all}
     if len(ef) == 0:
         raise ValueError("Debes incluir al menos un termino en el modelo.")
@@ -196,7 +196,7 @@ def calcular_via2_con_terminos(df, factores, terms=None):
     df_b = n_b - 1
     ef_all = _calc_effects(df, factores, Nf)
     if terms is None:
-        terms = list(ef_all.keys())
+        terms = [t for t in ef_all.keys() if len(t.split('*')) <= 2]
     ef = {t: ef_all[t] for t in terms if t in ef_all}
     yf = esq['Y'].mean(); yc = cen['Y'].mean()
     SS_c = Nf*Nc/(Nf+Nc)*(yf-yc)**2
