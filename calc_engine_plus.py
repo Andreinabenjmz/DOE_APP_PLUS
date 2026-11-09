@@ -826,7 +826,8 @@ def _gen_superficie_3d(R):
     if len(factores) < 2:
         return None
         
-    f1, f2 = factores[0], factores[2] # A y C
+    # Usamos los nombres reales de los factores (los que vienen del Excel o del renombrador)
+    f1, f2 = factores[0], factores[2] 
     
     x = np.linspace(-1, 1, 50)
     y = np.linspace(-1, 1, 50)
@@ -839,30 +840,39 @@ def _gen_superficie_3d(R):
     if f2 in R['effects']:
         Z += R['effects'][f2]['coef'] * Y
         
-    # --- CURVATURA DINÁMICA ---
-    # Si la curvatura es significativa, calculamos su coeficiente real
-    # (Promedio de esquinas - Promedio del centro)
     if R.get('p_curv', 1) < 0.05:
         coef_curv = R['yf_bar'] - R['yc_bar'] 
         Z += coef_curv * (X**2)
-    # ---------------------------
 
     term_int = f"{f1}*{f2}"
     if term_int in R['effects']:
         Z += R['effects'][term_int]['coef'] * X * Y
         
+    # Encontrar el óptimo
+    idx_max = np.unravel_index(np.argmax(Z), Z.shape)
+    x_opt = X[idx_max]
+    y_opt = Y[idx_max]
+    z_opt = Z[idx_max]
+
     fig = plt.figure(figsize=(14, 6))
     
     ax1 = fig.add_subplot(121, projection='3d')
     surf = ax1.plot_surface(X, Y, Z, cmap='viridis', edgecolor='none', alpha=0.9)
+    ax1.scatter(x_opt, y_opt, z_opt, color='red', marker='*', s=300, zorder=10, label='Óptimo Predicho')
+    ax1.legend()
+    
+    # Usar los nombres reales en los ejes
     ax1.set_xlabel(f1)
     ax1.set_ylabel(f2)
     ax1.set_zlabel('Respuesta (Y)')
-    ax1.set_title(f'Superficie de Respuesta: {f1} vs {f2}')
+    ax1.set_title(f'Superficie: {f1} vs {f2}')
     fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5)
     
     ax2 = fig.add_subplot(122)
     contour = ax2.contourf(X, Y, Z, 20, cmap='viridis')
+    ax2.scatter(x_opt, y_opt, color='red', marker='*', s=200, zorder=10, label='Óptimo Predicho')
+    ax2.legend(loc='upper right')
+    
     ax2.set_xlabel(f1)
     ax2.set_ylabel(f2)
     ax2.set_title(f'Curvas de Nivel: {f1} vs {f2}')
