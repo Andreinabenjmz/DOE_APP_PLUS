@@ -179,27 +179,48 @@ with st.sidebar:
         estudiante = st.text_input("Estudiante", "")
         curso = st.text_input("Curso", "Asignacion")
 
-
-        # --- PANEL DE SIMULACIÓN (Debe estar ANTES del botón Procesar) ---
+        # --- PANEL DE SIMULACIÓN ---
         st.markdown("### 🧪 Simulador de Datos")
         simular_datos = st.checkbox("Generar datos con ecuación matemática (añadir ruido)")
         
         if simular_datos:
-            st.markdown("Introduce los coeficientes de tu ecuación:")
+            # 1. Inicializar los valores por defecto (solo la primera vez)
+            if 'sim_b0' not in st.session_state:
+                st.session_state.sim_b0 = 2.5
+                st.session_state.sim_bA = 0.6
+                st.session_state.sim_bB = 0.3
+                st.session_state.sim_bC = -0.5
+                st.session_state.sim_bD = 0.2
+                st.session_state.sim_bE = -0.4
+                st.session_state.sim_bAA = -0.2
+
+            # 2. Botón para autogenerar
+            if st.button("🎲 Autogenerar coeficientes plausibles"):
+                st.session_state.sim_b0 = float(np.random.uniform(2.0, 3.5))
+                st.session_state.sim_bA = float(np.random.uniform(0.4, 0.8))
+                st.session_state.sim_bB = float(np.random.uniform(0.2, 0.5))
+                st.session_state.sim_bC = float(-np.random.uniform(0.3, 0.7))
+                st.session_state.sim_bD = float(np.random.uniform(0.1, 0.3))
+                st.session_state.sim_bE = float(-np.random.uniform(0.3, 0.6))
+                st.session_state.sim_bAA = float(-np.random.uniform(0.1, 0.3))
+                st.rerun() # Fuerza a la pantalla a actualizarse con los nuevos valores
+
+            # 3. Las cajitas de texto (permiten edición manual)
+            st.markdown("Ajusta los coeficientes (o usa el dado):")
             c1, c2 = st.columns(2)
-            b0 = c1.number_input("Intercepto (β0)", value=2.5)
-            bA = c2.number_input("Efecto A", value=0.6)
-            bB = c1.number_input("Efecto B", value=0.3)
-            bC = c2.number_input("Efecto C", value=-0.5)
-            bD = c1.number_input("Efecto D", value=0.2)
-            bE = c2.number_input("Efecto E", value=-0.4)
-            bAA = c1.number_input("Curvatura (A²)", value=-0.2)
-            ruido = c2.number_input("Desviación del ruido (σ)", value=0.1)
+            b0 = c1.number_input("Intercepto (β0)", key="sim_b0", format="%.3f")
+            bA = c2.number_input("Efecto A (+)", key="sim_bA", format="%.3f")
+            bB = c1.number_input("Efecto B (+)", key="sim_bB", format="%.3f")
+            bC = c2.number_input("Efecto C (-)", key="sim_bC", format="%.3f")
+            bD = c1.number_input("Efecto D (+)", key="sim_bD", format="%.3f")
+            bE = c2.number_input("Efecto E (-)", key="sim_bE", format="%.3f")
+            bAA = c1.number_input("Curvatura A² (-)", key="sim_bAA", format="%.3f")
             
-            st.markdown("**Límites biológicos de la respuesta (Y):**")
+            # Ruido y límites
             c3, c4 = st.columns(2)
-            y_min = c3.number_input("Y mínimo permitido", value=0.0)
-            y_max = c4.number_input("Y máximo permitido", value=5.0)
+            ruido = c3.number_input("Ruido (σ)", value=0.1)
+            y_max = c4.number_input("Y máximo", value=5.0)
+            y_min = 0.0 # Asumimos que Y no puede ser negativa
 
         # --- BOTÓN PROCESAR ---
         if st.button("Procesar", type='primary'):
