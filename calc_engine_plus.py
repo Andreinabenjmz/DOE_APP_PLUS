@@ -818,6 +818,7 @@ def generar_tabla_alias(df, factores):
             })
     return pd.DataFrame(filas)
 
+
 def _gen_superficie_3d(R):
     if R['via'] == VIA_3:
         return None, None, None, None
