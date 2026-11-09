@@ -837,7 +837,14 @@ elif st.session_state.stage == 'diagnostics':
     
     # Llamamos a la función y capturamos los 4 valores que retorna
     # Obtener el nombre de la respuesta que seleccionaste en el Excel
-    resp_name = st.session_state.respuesta[0] if 'respuesta' in st.session_state and st.session_state.respuesta else 'Respuesta'
+    # Obtener el nombre de la respuesta EN TIEMPO REAL desde la barra lateral
+    if 'respuesta' in st.session_state and st.session_state.respuesta:
+        r_orig = st.session_state.respuesta[0]
+        # Buscamos si el usuario escribió un nombre nuevo en el renombrador
+        resp_name = st.session_state.get(f"rename_resp_{r_orig}", r_orig)
+    else:
+        resp_name = 'Respuesta'
+        
     fn_surf, x_opt, y_opt, z_opt = ce._gen_superficie_3d(R, resp_name=resp_name)
     
     if fn_surf and os.path.exists(fn_surf):
