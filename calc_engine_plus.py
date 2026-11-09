@@ -202,6 +202,8 @@ def calcular_via2_con_terminos(df, factores, terms=None):
     SS_c = Nf*Nc/(Nf+Nc)*(yf-yc)**2
     SS_m = SS_b + sum(e['SS'] for e in ef.values()) + SS_c
     SS_r = SS_t - SS_m
+    if SS_r <= 0:
+        SS_r = 1e-5  # Forzamos un error mínimo positivo para evitar F negativas
     df_r = N - 1 - (df_b + len(ef) + 1)
     if df_r < 1: raise ValueError(f"df_resid={df_r}<1")
     MS_r = SS_r/df_r
@@ -337,7 +339,7 @@ def _gen_pareto(R):
         
     order = np.argsort(tvals)
     fig, ax = plt.subplots(figsize=(10, max(4, 0.35*len(terms)+2)))
-    colors = ['#d9534f' if p<0.05 else '#7fb3d5' for p in np.array(pvals)[order]]
+    colors = ['#d9534f' if p < 0.05 else '#7fb3d5' for p in np.array(pvals)[order]]
     ax.barh([terms[i] for i in order], [tvals[i] for i in order], color=colors, edgecolor='black')
     
     if R['via'] == VIA_3:
