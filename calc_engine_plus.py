@@ -234,16 +234,15 @@ def calcular_via2_con_terminos(df, factores, terms=None):
                     for p in anova['p']]
 
     # --- NUEVO: Guardar coeficientes de bloques para la ecuación (Solo Vía 2) ---
+    R_coef_bloques = {}
     if df_b > 0:
         medias_bloques = bt / sz
         R_intercepto_bloques = medias_bloques.iloc[0] 
+        for i, b in enumerate(medias_bloques.index):
+            if i > 0:
+                R_coef_bloques[b] = medias_bloques.iloc[i] - R_intercepto_bloques
     else:
         R_intercepto_bloques = y  # Si no hay bloques, usar la media global
-    
-    R_coef_bloques = {}
-    for i, b in enumerate(medias_bloques.index):
-        if i > 0:
-            R_coef_bloques[b] = medias_bloques.iloc[i] - R_intercepto_bloques
     # ----------------------------------------------------------------------------
     R2 = 1 - SS_r/SS_t; R2a = 1 - (SS_r/df_r)/(SS_t/(N-1))
     R = dict(via=VIA_2, k=k, factores=factores, N=N, Nf=Nf, Nc=Nc,
