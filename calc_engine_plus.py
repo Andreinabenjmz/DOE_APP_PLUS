@@ -853,39 +853,53 @@ def _gen_superficie_3d(R):
     y_opt = Y[idx_max]
     z_opt = Z[idx_max]
 
+    z_min = np.min(Z)
+    z_max = np.max(Z)
+    margen = (z_max - z_min) * 0.1
+    limite_inf = z_min - margen
+    limite_sup = z_max + margen
+
     fig = plt.figure(figsize=(14, 6))
     
+    # --- GRÁFICO 3D ---
     ax1 = fig.add_subplot(121, projection='3d')
     surf = ax1.plot_surface(X, Y, Z, cmap='viridis', edgecolor='none', alpha=0.9)
     ax1.scatter(x_opt, y_opt, z_opt, color='red', marker='*', s=300, zorder=10, label='Óptimo Predicho')
-    
-    # Añadir el valor numérico sobre la estrella en el gráfico 3D
-    ax1.text(x_opt, y_opt, z_opt + 0.2, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
-    
+    ax1.text(x_opt, y_opt, z_opt + margen, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
     ax1.legend()
     ax1.set_xlabel(f1)
     ax1.set_ylabel(f2)
     ax1.set_zlabel('Respuesta (Y)')
     ax1.set_title(f'Superficie: {f1} vs {f2}')
-    fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5)
+    ax1.set_zlim(limite_inf, limite_sup)
+    fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5, extend='both')
     
+    # --- GRÁFICO 2D (CURVAS DE NIVEL) ---
     ax2 = fig.add_subplot(122)
-    contour = ax2.contourf(X, Y, Z, 20, cmap='viridis')
+    niveles = np.linspace(z_min, z_max, 20)
+    
+    # 1. Fondo de colores
+    contour_f = ax2.contourf(X, Y, Z, levels=niveles, cmap='viridis', extend='both')
+    
+    # --- NUEVO: LÍNEAS DE CONTORNO ---
+    # 2. Dibujamos las líneas blancas
+    lineas = ax2.contour(X, Y, Z, levels=niveles, colors='white', linewidths=0.8, alpha=0.7)
+    
+    # 3. Les ponemos los números encima
+    ax2.clabel(lineas, inline=True, fontsize=8, fmt='%.1f')
+    # ---------------------------------
+    
     ax2.scatter(x_opt, y_opt, color='red', marker='*', s=200, zorder=10, label='Óptimo Predicho')
-    
-    # Añadir el valor numérico en el gráfico 2D
     ax2.text(x_opt, y_opt + 0.1, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
-    
     ax2.legend(loc='upper right')
     ax2.set_xlabel(f1)
     ax2.set_ylabel(f2)
     ax2.set_title(f'Curvas de Nivel: {f1} vs {f2}')
-    fig.colorbar(contour, ax=ax2)
+    fig.colorbar(contour_f, ax=ax2, extend='both')
     
     plt.tight_layout()
     fn = 'superficie_3d.png'
     plt.savefig(fn, bbox_inches='tight')
     plt.close()
     
-    # Retornar el nombre de la imagen y los valores del óptimo
     return fn, x_opt, y_opt, z_opt
