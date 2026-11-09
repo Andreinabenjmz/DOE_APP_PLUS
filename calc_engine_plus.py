@@ -839,15 +839,14 @@ def _gen_superficie_3d(R):
     if f2 in R['effects']:
         Z += R['effects'][f2]['coef'] * Y
         
-    # --- NUEVO: AGREGAR LA CURVATURA EXPLÍCITAMENTE ---
-    # Buscamos si la curvatura fue significativa en el ANOVA
+    # --- CURVATURA DINÁMICA ---
+    # Si la curvatura es significativa, calculamos su coeficiente real
+    # (Promedio de esquinas - Promedio del centro)
     if R.get('p_curv', 1) < 0.05:
-        # El coeficiente de curvatura en la ecuación es (yc_bar - yf_bar)
-        coef_curv = R['yc_bar'] - R['yf_bar']
+        coef_curv = R['yf_bar'] - R['yc_bar'] 
         Z += coef_curv * (X**2)
-    # --------------------------------------------------
+    # ---------------------------
 
-    # Interacciones (si existen)
     term_int = f"{f1}*{f2}"
     if term_int in R['effects']:
         Z += R['effects'][term_int]['coef'] * X * Y
