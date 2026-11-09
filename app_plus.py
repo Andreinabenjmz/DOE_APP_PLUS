@@ -179,6 +179,29 @@ with st.sidebar:
         estudiante = st.text_input("Estudiante", "")
         curso = st.text_input("Curso", "Asignacion")
 
+
+        # --- PANEL DE SIMULACIÓN (Debe estar ANTES del botón Procesar) ---
+        st.markdown("### 🧪 Simulador de Datos")
+        simular_datos = st.checkbox("Generar datos con ecuación matemática (añadir ruido)")
+        
+        if simular_datos:
+            st.markdown("Introduce los coeficientes de tu ecuación:")
+            c1, c2 = st.columns(2)
+            b0 = c1.number_input("Intercepto (β0)", value=2.5)
+            bA = c2.number_input("Efecto A", value=0.6)
+            bB = c1.number_input("Efecto B", value=0.3)
+            bC = c2.number_input("Efecto C", value=-0.5)
+            bD = c1.number_input("Efecto D", value=0.2)
+            bE = c2.number_input("Efecto E", value=-0.4)
+            bAA = c1.number_input("Curvatura (A²)", value=-0.2)
+            ruido = c2.number_input("Desviación del ruido (σ)", value=0.1)
+            
+            st.markdown("**Límites biológicos de la respuesta (Y):**")
+            c3, c4 = st.columns(2)
+            y_min = c3.number_input("Y mínimo permitido", value=0.0)
+            y_max = c4.number_input("Y máximo permitido", value=5.0)
+
+        # --- BOTÓN PROCESAR ---
         if st.button("Procesar", type='primary'):
             try:
                 # 1. Aplicar el renombrado
@@ -200,6 +223,30 @@ with st.sidebar:
                         if len(vals) == 2:
                             lo, hi = min(vals), max(vals)
                             rp[f] = rp[f].map({lo: -1, hi: 1})
+                
+                # --- NUEVO: APLICAR SIMULACIÓN AQUÍ ADENTRO ---
+                if simular_datos:
+                    # Creamos la columna Y aplicando la ecuación
+                    rp['Y_simulado'] = (b0 + 
+                                      bA * rp[cols[0]] + 
+                                      bB * rp[cols[1]] + 
+                                      bC * rp[cols[2]] + 
+                                      bD * rp[cols[3]] + 
+                                      bE * rp[cols[4]] + 
+                                      bAA * (rp[cols[0]]**2))
+                    
+                    # Añadimos el ruido gaussiano (solo a las esquinas, no a los centros)
+                    es_centro = rp[cols].eq(0).all(axis=1)
+                    ruido_aleatorio = np.random.normal(0, ruido, len(rp))
+                    rp.loc[~es_centro, 'Y_simulado'] += ruido_aleatorio[~es_centro]
+                    
+                    # Recortar al rango biológico
+                    rp['Y_simulado'] = np.clip(rp['Y_simulado'], y_min, y_max)
+                    
+                    # Asignar a la columna de respuesta (la primera que hayas seleccionado)
+                    rp[resp[0]] = rp['Y_simulado']
+                    rp = rp.drop(columns=['Y_simulado'])
+                # ------------------------------------------------
                 
                 # 3. Convertir respuestas a numérico y preparar datos
                 for c in resp:
