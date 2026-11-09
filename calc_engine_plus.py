@@ -188,6 +188,7 @@ def calcular_via2_con_terminos(df, factores, terms=None):
     k = len(factores); n_b = df['Grupo'].nunique(); N = len(df)
     Nf = len(df[df['Curvatura']==0]) // n_b if n_b > 0 else len(df[df['Curvatura']==0])
     Nc = N - Nf; G = df['Y'].sum(); y = G/N
+    
     esq = df[df['Curvatura']==0]; cen = df[df['Curvatura']==1]
     SS_t = (df['Y']**2).sum() - G**2/N
     bt = df.groupby('Grupo')['Y'].sum(); sz = df.groupby('Grupo').size()
@@ -196,20 +197,35 @@ def calcular_via2_con_terminos(df, factores, terms=None):
     ef_all = _calc_effects(df, factores, Nf)
     if terms is None:
         terms = [t for t in ef_all.keys() if len(t.split('*')) <= 2]
-    
     ef = {t: ef_all[t] for t in terms if t in ef_all}
     yf = esq['Y'].mean(); yc = cen['Y'].mean()
     SS_c = Nf*Nc/(Nf+Nc)*(yf-yc)**2
     SS_m = SS_b + sum(e['SS'] for e in ef.values()) + SS_c
     SS_r = SS_t - SS_m
+    if SS_r <= 0:
+        SS_r = 1e-5  # Forzamos un error mínimo positivo para evitar F negativas
     df_r = N - 1 - (df_b + len(ef) + 1)
     if df_r < 1: raise ValueError(f"df_resid={df_r}<1")
-    MS_r = SS_r/df_r; MS_b = SS_b/df_b; F_b = MS_b/MS_r
-    p_b = stats.f.sf(F_b, df_b, df_r)
+    MS_r = SS_r/df_r
+    
+    # --- CORRECCIÓN PARA EVITAR DIVISIÓN POR CERO ---
+    if df_b > 0:
+        MS_b = SS_b/df_b
+        F_b = MS_b/MS_r
+        p_b = stats.f.sf(F_b, df_b, df_r)
+    else:
+        MS_b = np.nan
+        F_b = np.nan
+        p_b = np.nan
+        
     MS_c = SS_c; F_c = MS_c/MS_r; p_c = stats.f.sf(F_c, 1, df_r)
     for e in ef.values():
         e['MS']=e['SS']; e['F']=e['MS']/MS_r; e['p']=stats.f.sf(e['F'],1,df_r)
-    rows = [('Bloques', SS_b, df_b, MS_b, F_b, p_b)]
+        
+    rows = []
+    if df_b > 0:
+        rows.append(('Bloques', SS_b, df_b, MS_b, F_b, p_b))
+        
     for n_, e in ef.items(): rows.append((n_, e['SS'], 1, e['MS'], e['F'], e['p']))
     rows.append(('Curvatura', SS_c, 1, MS_c, F_c, p_c))
     rows.append(('Residual', SS_r, df_r, MS_r, np.nan, np.nan))
@@ -218,13 +234,17 @@ def calcular_via2_con_terminos(df, factores, terms=None):
                        for gl in anova['GL']]
     anova['Sig'] = ['OK' if (pd.notna(p) and p<0.05) else ('-' if pd.isna(p) else 'NO')
                     for p in anova['p']]
+
     # --- NUEVO: Guardar coeficientes de bloques para la ecuación (Solo Vía 2) ---
-    medias_bloques = bt / sz
-    R_intercepto_bloques = medias_bloques.iloc[0] 
     R_coef_bloques = {}
-    for i, b in enumerate(medias_bloques.index):
-        if i > 0:
-            R_coef_bloques[b] = medias_bloques.iloc[i] - R_intercepto_bloques
+    if df_b > 0:
+        medias_bloques = bt / sz
+        R_intercepto_bloques = medias_bloques.iloc[0] 
+        for i, b in enumerate(medias_bloques.index):
+            if i > 0:
+                R_coef_bloques[b] = medias_bloques.iloc[i] - R_intercepto_bloques
+    else:
+        R_intercepto_bloques = y  # Si no hay bloques, usar la media global
     # ----------------------------------------------------------------------------
     R2 = 1 - SS_r/SS_t; R2a = 1 - (SS_r/df_r)/(SS_t/(N-1))
     R = dict(via=VIA_2, k=k, factores=factores, N=N, Nf=Nf, Nc=Nc,
@@ -294,20 +314,34 @@ def calcular_via3(df, factores):
 # ---------- Graficos ----------
 def _gen_pareto(R):
     terms = list(R['effects'].keys())
-    if R['via'] == VIA_3:
-        tvals = [abs(R['effects'][n]['efecto'])/max(R['lenth']['PSE'],1e-9) for n in R['effects']]
-    else:
-        tvals = [abs(R['effects'][n]['F']**0.5) if pd.notna(R['effects'][n].get('F'))
-                 else abs(R['effects'][n]['efecto'])/max(R['lenth']['PSE'],1e-9)
-                 for n in R['effects']]
+    
+    # --- INICIO DEL ARREGLO ---
+    tvals = []
+    for n in R['effects']:
+        F_val = R['effects'][n].get('F')
+        if pd.notna(F_val) and F_val > 0:
+            t = F_val**0.5
+        else:
+            # Si F es NaN o negativo, usamos el efecto crudo
+            t = abs(R['effects'][n]['efecto']) / max(R['lenth']['PSE'], 1e-9)
+        
+        # Si el resultado es infinito (por falta de ruido), lo limitamos a 50
+        if not np.isfinite(t):
+            t = 50
+            
+        tvals.append(t)
+    # --- FIN DEL ARREGLO ---
+
     pvals = [R['effects'][n]['p'] if pd.notna(R['effects'][n].get('p'))
              else (0.01 if R['effects'][n].get('activo') else 0.5) for n in R['effects']]
     if R['tiene_centro']:
-        terms.append('Curvatura'); tvals.append(abs(R['F_curv']**0.5)); pvals.append(R['p_curv'])
+        terms.append('Curvatura'); tvals.append(abs(R['F_curv']**0.5) if np.isfinite(R['F_curv']) else 50); pvals.append(R['p_curv'])
+        
     order = np.argsort(tvals)
     fig, ax = plt.subplots(figsize=(10, max(4, 0.35*len(terms)+2)))
-    colors = ['#d9534f' if p<0.05 else '#7fb3d5' for p in np.array(pvals)[order]]
+    colors = ['#d9534f' if p < 0.05 else '#7fb3d5' for p in np.array(pvals)[order]]
     ax.barh([terms[i] for i in order], [tvals[i] for i in order], color=colors, edgecolor='black')
+    
     if R['via'] == VIA_3:
         umb = R['lenth']['ME']/max(R['lenth']['PSE'],1e-9); lab = f'ME/PSE = {umb:.2f} (Lenth)'
     else:

@@ -122,8 +122,8 @@ with st.sidebar:
         st.markdown("### Columnas")
         fact_cands, resp_cands, _ = _detectar_columnas(raw)
 
-        cols = st.multiselect("Factores", raw.columns.tolist(), default=fact_cands)
-        resp = st.multiselect("Respuesta(s)", raw.columns.tolist(), default=resp_cands)
+        cols = st.multiselect("Factores", raw.columns.tolist(), default=fact_cands, key="mis_factores")
+        resp = st.multiselect("Respuesta(s)", raw.columns.tolist(), default=resp_cands, key="mi_respuesta")
 
         # --- PANEL PARA RENOMBRAR ---
         mapping_nombres = {}
@@ -215,12 +215,15 @@ with st.sidebar:
             bD = c1.number_input("Efecto D (+)", key="sim_bD", format="%.3f")
             bE = c2.number_input("Efecto E (-)", key="sim_bE", format="%.3f")
             bAA = c1.number_input("Curvatura A² (-)", key="sim_bAA", format="%.3f")
-            
+
             # Ruido y límites
             c3, c4 = st.columns(2)
             ruido = c3.number_input("Ruido (σ)", value=0.1)
             y_max = c4.number_input("Y máximo", value=5.0)
-            y_min = 0.0 # Asumimos que Y no puede ser negativa
+            # Añadimos el Y mínimo aquí:
+            y_min = st.number_input("Y mínimo permitido", value=0.0)
+
+    
 
         # --- BOTÓN PROCESAR ---
         if st.button("Procesar", type='primary'):
@@ -244,7 +247,7 @@ with st.sidebar:
                         if len(vals) == 2:
                             lo, hi = min(vals), max(vals)
                             rp[f] = rp[f].map({lo: -1, hi: 1})
-                
+
                 # --- NUEVO: APLICAR SIMULACIÓN AQUÍ ADENTRO ---
                 if simular_datos:
                     # Creamos la columna Y aplicando la ecuación
@@ -298,28 +301,80 @@ with st.sidebar:
 # ---------- Main ----------
 if st.session_state.stage == 'upload':
     st.title("DOE 2^k - Modo Minitab")
-    st.markdown("""
-    ### Como funciona
+    
+    # Si ya se cargó un archivo
+    if st.session_state.raw is not None:
+        st.markdown("## 📊 Vista de Datos")
+        
+        # Selector para alternar entre originales y simulados
+        opciones_vista = ["📁 Datos Originales (Excel)", "🧪 Datos Simulados"]
+        # Si la simulación está apagada, forzamos la vista original
+        if not ('simular_datos' in locals() and simular_datos):
+            opciones_vista = ["📁 Datos Originales (Excel)"]
+            
+        vista_seleccionada = st.radio("Selecciona qué datos quieres visualizar:", opciones_vista, horizontal=True)
+        
+        if vista_seleccionada == "🧪 Datos Simulados" and 'simular_datos' in locals() and simular_datos:
+            # Calcular Y usando los coeficientes actuales de la barra lateral
+            rp_temp = st.session_state.raw.copy()
+            for f in cols:
+                if f in mapeos_niveles:
+                    rp_temp[f] = rp_temp[f].map(mapeos_niveles[f])
+                else:
+                    vals = list(dict.fromkeys(rp_temp[f].dropna().tolist()))
+                    if len(vals) == 2:
+                        lo, hi = min(vals), max(vals)
+                        rp_temp[f] = rp_temp[f].map({lo: -1, hi: 1})
+            
+            # Aplicar ecuación
+            y_sim = (b0 + bA * rp_temp[cols[0]] + bB * rp_temp[cols[1]] + 
+                     bC * rp_temp[cols[2]] + bD * rp_temp[cols[3]] + 
+                     bE * rp_temp[cols[4]] + bAA * (rp_temp[cols[0]]**2))
+            
+            # Aplicar ruido
+            es_centro = rp_temp[cols].eq(0).all(axis=1)
+            ruido_aleatorio = np.random.normal(0, ruido, len(rp_temp))
+            y_sim.loc[~es_centro] += ruido_aleatorio[~es_centro]
+            y_sim = np.clip(y_sim, y_min, y_max)
+            
+            # Mostrar tabla
+            df_preview = rp_temp[cols].copy()
+            df_preview.insert(0, 'Corrida', range(1, len(df_preview) + 1))
+            df_preview['Y_Simulada'] = y_sim.round(3)
+            st.dataframe(df_preview, use_container_width=True)
+            st.info("💡 Esta tabla se actualiza si cambias los coeficientes o usas el dado en la barra lateral. Para usar estos datos en el análisis, presiona el botón azul **'Procesar'** en la barra lateral izquierda.")
+            
+        else:
+            # Mostrar tabla original
+            st.dataframe(st.session_state.raw, use_container_width=True)
+            if 'simular_datos' in locals() and simular_datos:
+                st.info("💡 Activa la opción 'Datos Simulados' arriba para ver los valores generados por la ecuación.")
+                
+    else:
+        # Pantalla de bienvenida original
+        st.markdown("""
+        ### Como funciona
 
-    Esta app reproduce el flujo de Minitab para disenos factoriales 2^k:
+        Esta app reproduce el flujo de Minitab para disenos factoriales 2^k:
 
-    1. **Diseno** - revisa la estructura
-    2. **Modelo completo** - ANOVA con todos los terminos, Pareto, semi-normal
-    3. **Refinar modelo** - TU decides que terminos quitar (aqui esta el esfuerzo)
-    4. **Diagnostico** - residuales, efectos principales, interacciones
-    5. **Reporte** - descarga tablas, graficos y plantilla Word
+        1. **Diseno** - revisa la estructura
+        2. **Modelo completo** - ANOVA con todos los terminos, Pareto, semi-normal
+        3. **Refinar modelo** - TU decides que terminos quitar (aqui esta el esfuerzo)
+        4. **Diagnostico** - residuales, efectos principales, interacciones
+        5. **Reporte** - descarga tablas, graficos y plantilla Word
 
-    ### ¿En qué se parece a Minitab?
+        ### ¿En qué se parece a Minitab?
 
-    - **Interpretar** el Pareto y el semi-normal para decidir que terminos son reales
-    - **Seleccionar** terminos en el modelo reducido
-    - **Verificar** que los resultados tengan sentido
-    - **Diagnosticar** los residuales
-    - **Escribir tus conclusiones**
+        - **Interpretar** el Pareto y el semi-normal para decidir que terminos son reales
+        - **Seleccionar** terminos en el modelo reducido
+        - **Verificar** que los resultados tengan sentido
+        - **Diagnosticar** los residuales
+        - **Escribir tus conclusiones**
 
-    Al igual que en Minitab, la app te da los numeros, pero las decisiones son tuyas.
-    """)
-    st.info("Empieza subiendo un archivo en la barra lateral")
+        Al igual que en Minitab, la app te da los numeros, pero las decisiones son tuyas.
+        """)
+        st.info("Empieza subiendo un archivo en la barra lateral")
+    
 elif st.session_state.stage == 'design':
     df = st.session_state.df
     factores = st.session_state.factores
@@ -351,6 +406,7 @@ elif st.session_state.stage == 'design':
     st.markdown("### Combinaciones del diseno")
     st.dataframe(cond, use_container_width=True)
 
+
     # --- NUEVO: MOSTRAR ALIAS ---
     st.markdown("---")
     st.markdown("### 🕵️ Estructura de Alias (Confundimiento)")
@@ -359,8 +415,19 @@ elif st.session_state.stage == 'design':
     st.dataframe(df_alias, use_container_width=True)
     # ----------------------------
 
-    if st.button("Ir a Modelo completo", type='primary'):
-        st.session_state.stage = 'full_model'; st.rerun()
+    # --- NUEVO: BOTONES DE NAVEGACIÓN ---
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    
+    if c1.button("⬅️ Volver a Datos / Simulación", use_container_width=True):
+        st.session_state.stage = 'upload'
+        st.session_state.df = None # Limpiamos el dataframe para poder volver a procesar
+        st.session_state.R_full = None
+        st.rerun()
+        
+    if c2.button("Ir a Modelo completo ➡️", type='primary', use_container_width=True):
+        st.session_state.stage = 'full_model'
+        st.rerun()
 
 elif st.session_state.stage == 'full_model':
     st.title("Paso 2 - Modelo completo")
