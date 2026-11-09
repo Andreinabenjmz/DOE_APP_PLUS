@@ -406,6 +406,7 @@ elif st.session_state.stage == 'design':
     st.markdown("### Combinaciones del diseno")
     st.dataframe(cond, use_container_width=True)
 
+
     # --- NUEVO: MOSTRAR ALIAS ---
     st.markdown("---")
     st.markdown("### 🕵️ Estructura de Alias (Confundimiento)")
@@ -413,6 +414,24 @@ elif st.session_state.stage == 'design':
     df_alias = ce.generar_tabla_alias(df, factores)
     st.dataframe(df_alias, use_container_width=True)
     # ----------------------------
+
+    # --- NUEVO: BOTONES DE NAVEGACIÓN ---
+    st.markdown("---")
+    c1, c2 = st.columns(2)
+    
+    if c1.button("⬅️ Volver a Datos / Simulación", use_container_width=True):
+        st.session_state.stage = 'upload'
+        st.session_state.df = None # Limpiamos el dataframe para poder volver a procesar
+        st.session_state.R_full = None
+        st.rerun()
+        
+    if c2.button("Ir a Modelo completo ➡️", type='primary', use_container_width=True):
+        st.session_state.stage = 'full_model'
+        st.rerun()
+
+elif st.session_state.stage == 'full_model':
+    st.title("Paso 2 - Modelo completo")
+    # ... (el resto de tu código sigue igual)
 
     if st.button("Ir a Modelo completo", type='primary'):
         st.session_state.stage = 'full_model'; st.rerun()
