@@ -339,7 +339,14 @@ def _gen_pareto(R):
         
     order = np.argsort(tvals)
     fig, ax = plt.subplots(figsize=(10, max(4, 0.35*len(terms)+2)))
-    colors = ['#d9534f' if p < 0.05 else '#7fb3d5' for p in np.array(pvals)[order]]
+    # Calcular el umbral visual de t
+    if R['via'] == VIA_3:
+        umbral_visual = R['lenth']['ME'] / max(R['lenth']['PSE'],1e-9)
+    else:
+        umbral_visual = R['t_crit']
+
+    # Pintar de rojo si supera el umbral, azul si no
+    colors = ['#d9534f' if t >= umbral_visual else '#7fb3d5' for t in np.array(tvals)[order]]
     ax.barh([terms[i] for i in order], [tvals[i] for i in order], color=colors, edgecolor='black')
     
     if R['via'] == VIA_3:
