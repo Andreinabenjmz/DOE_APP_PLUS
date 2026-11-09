@@ -870,13 +870,13 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)'):
     
     ax1.set_xlabel(f"{f1} (coded)")
     ax1.set_ylabel(f"{f2} (coded)")
-    ax1.set_zlabel(resp_name) # <--- CAMBIO AQUÍ (Eje Z dinámico)
+    ax1.set_zlabel(resp_name, labelpad=15, rotation=90)
     ax1.set_title(f'Superficie: {f1} vs {f2}')
     ax1.set_zlim(limite_inf, limite_sup)
     
     # Barra de colores 3D con su etiqueta
     cbar1 = fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5, extend='both')
-    cbar1.set_label(resp_name, rotation=270, labelpad=15) # <--- CAMBIO AQUÍ
+    cbar1.set_label(resp_name, rotation=270, labelpad=25)
     
     # --- GRÁFICO 2D (CURVAS DE NIVEL) ---
     ax2 = fig.add_subplot(122)
@@ -908,7 +908,7 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)'):
     
     # Barra de colores 2D con su etiqueta
     cbar2 = fig.colorbar(contour_f, ax=ax2, extend='both')
-    cbar2.set_label(resp_name, rotation=270, labelpad=15) # <--- CAMBIO AQUÍ
+    cbar2.set_label(resp_name, rotation=270, labelpad=25)
     
     plt.tight_layout()
     fn = 'superficie_3d.png'
