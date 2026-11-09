@@ -820,13 +820,12 @@ def generar_tabla_alias(df, factores):
 
 def _gen_superficie_3d(R):
     if R['via'] == VIA_3:
-        return None
+        return None, None, None, None
         
     factores = R['factores']
     if len(factores) < 2:
-        return None
+        return None, None, None, None
         
-    # Usamos los nombres reales de los factores (los que vienen del Excel o del renombrador)
     f1, f2 = factores[0], factores[2] 
     
     x = np.linspace(-1, 1, 50)
@@ -859,9 +858,11 @@ def _gen_superficie_3d(R):
     ax1 = fig.add_subplot(121, projection='3d')
     surf = ax1.plot_surface(X, Y, Z, cmap='viridis', edgecolor='none', alpha=0.9)
     ax1.scatter(x_opt, y_opt, z_opt, color='red', marker='*', s=300, zorder=10, label='Óptimo Predicho')
-    ax1.legend()
     
-    # Usar los nombres reales en los ejes
+    # Añadir el valor numérico sobre la estrella en el gráfico 3D
+    ax1.text(x_opt, y_opt, z_opt + 0.2, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
+    
+    ax1.legend()
     ax1.set_xlabel(f1)
     ax1.set_ylabel(f2)
     ax1.set_zlabel('Respuesta (Y)')
@@ -871,8 +872,11 @@ def _gen_superficie_3d(R):
     ax2 = fig.add_subplot(122)
     contour = ax2.contourf(X, Y, Z, 20, cmap='viridis')
     ax2.scatter(x_opt, y_opt, color='red', marker='*', s=200, zorder=10, label='Óptimo Predicho')
-    ax2.legend(loc='upper right')
     
+    # Añadir el valor numérico en el gráfico 2D
+    ax2.text(x_opt, y_opt + 0.1, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
+    
+    ax2.legend(loc='upper right')
     ax2.set_xlabel(f1)
     ax2.set_ylabel(f2)
     ax2.set_title(f'Curvas de Nivel: {f1} vs {f2}')
@@ -882,4 +886,6 @@ def _gen_superficie_3d(R):
     fn = 'superficie_3d.png'
     plt.savefig(fn, bbox_inches='tight')
     plt.close()
-    return fn
+    
+    # Retornar el nombre de la imagen y los valores del óptimo
+    return fn, x_opt, y_opt, z_opt
