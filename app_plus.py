@@ -134,6 +134,16 @@ with st.sidebar:
                     nuevo = st.text_input(f"Nombre para '{c}':", value=c, key=f"rename_{c}")
                     if nuevo.strip() != "" and nuevo.strip() != c:
                         mapping_nombres[c] = nuevo.strip()
+                        
+        # --- NUEVO: PANEL PARA RENOMBRAR LA RESPUESTA ---
+        mapping_resp = {}
+        if len(resp) > 0:
+            with st.expander("✏️ Renombrar respuesta (opcional)"):
+                for r in resp:
+                    nuevo_r = st.text_input(f"Nombre para '{r}':", value=r, key=f"rename_resp_{r}")
+                    if nuevo_r.strip() != "" and nuevo_r.strip() != r:
+                        mapping_resp[r] = nuevo_r.strip()
+        # ------------------------------------------------
         
         # --- PANEL PARA CONFIGURAR NIVELES -1 / +1 ---
         mapeos_niveles = {}
@@ -232,7 +242,9 @@ with st.sidebar:
                 if mapping_nombres:
                     raw = raw.rename(columns=mapping_nombres)
                     cols = [mapping_nombres.get(c, c) for c in cols]
-
+                if mapping_resp:
+                    raw = raw.rename(columns=mapping_resp)
+                    resp = [mapping_resp.get(r, r) for r in resp]
                 rp = raw.copy()
                 rp.insert(0, 'Corrida_ID', range(1, len(rp) + 1))
                 
