@@ -818,7 +818,7 @@ def generar_tabla_alias(df, factores):
             })
     return pd.DataFrame(filas)
 
-def _gen_superficie_3d(R, resp_name='Respuesta (Y)'):
+def _gen_superficie_3d(R, resp_name='Respuesta (Y)', nombres_reales=None):
     if R['via'] == VIA_3:
         return None, None, None, None
         
@@ -826,7 +826,16 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)'):
     if len(factores) < 2:
         return None, None, None, None
         
-    f1, f2 = factores[0], factores[2] 
+    # 1. Nombres para los cálculos (los que guardó el modelo)
+    f1_raw, f2_raw = factores[0], factores[2] 
+    
+    # 2. Nombres para mostrar en el gráfico (los que tú escribes en la barra lateral)
+    if nombres_reales:
+        f1_label = nombres_reales.get(f1_raw, f1_raw)
+        f2_label = nombres_reales.get(f2_raw, f2_raw)
+    else:
+        f1_label = f1_raw
+        f2_label = f2_raw
     
     x = np.linspace(-1, 1, 50)
     y = np.linspace(-1, 1, 50)
@@ -834,16 +843,17 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)'):
     
     Z = np.full_like(X, R['y_bar']) 
     
-    if f1 in R['effects']:
-        Z += R['effects'][f1]['coef'] * X
-    if f2 in R['effects']:
-        Z += R['effects'][f2]['coef'] * Y
+    # --- CÁLCULOS (Usando los nombres RAW) ---
+    if f1_raw in R['effects']:
+        Z += R['effects'][f1_raw]['coef'] * X
+    if f2_raw in R['effects']:
+        Z += R['effects'][f2_raw]['coef'] * Y
         
     if R.get('p_curv', 1) < 0.05:
         coef_curv = R['yf_bar'] - R['yc_bar'] 
         Z += coef_curv * (X**2)
 
-    term_int = f"{f1}*{f2}"
+    term_int = f"{f1_raw}*{f2_raw}"
     if term_int in R['effects']:
         Z += R['effects'][term_int]['coef'] * X * Y
         
@@ -868,28 +878,25 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)'):
     ax1.text(x_opt, y_opt, z_opt + margen, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
     ax1.legend()
     
-    ax1.set_xlabel(f"{f1} (coded)")
-    ax1.set_ylabel(f"{f2} (coded)")
+    # --- ETIQUETAS (Usando los nombres LABEL) ---
+    ax1.set_xlabel(f"{f1_label} (coded)", labelpad=10)
+    ax1.set_ylabel(f"{f2_label} (coded)", labelpad=10)
     ax1.set_zlabel(resp_name, labelpad=15, rotation=90)
-    ax1.set_title(f'Superficie: {f1} vs {f2}')
+    ax1.set_title(f'Superficie: {f1_label} vs {f2_label}')
     ax1.set_zlim(limite_inf, limite_sup)
     
-    # Barra de colores 3D con su etiqueta
     cbar1 = fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5, extend='both')
     cbar1.set_label(resp_name, rotation=270, labelpad=25)
     
     # --- GRÁFICO 2D (CURVAS DE NIVEL) ---
     ax2 = fig.add_subplot(122)
     
-    # 1. FONDO SUAVE (50 niveles)
     niveles_fondo = np.linspace(z_min, z_max, 50)
     contour_f = ax2.contourf(X, Y, Z, levels=niveles_fondo, cmap='viridis', extend='both')
     
-    # 2. LÍNEAS BLANCAS (6 niveles)
     niveles_lineas = np.linspace(z_min, z_max, 6)
     lineas = ax2.contour(X, Y, Z, levels=niveles_lineas, colors='white', linewidths=1.2, alpha=1.0)
     
-    # 3. Etiquetas blancas con borde negro
     import matplotlib.patheffects as path_effects
     txt = ax2.clabel(lineas, inline=True, inline_spacing=5, fontsize=9, fmt='%1.2f')
     
@@ -902,11 +909,10 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)'):
     ax2.text(x_opt, y_opt + 0.1, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
     ax2.legend(loc='upper right')
     
-    ax2.set_xlabel(f"{f1} (coded)")
-    ax2.set_ylabel(f"{f2} (coded)")
-    ax2.set_title(f'Curvas de Nivel: {f1} vs {f2}')
+    ax2.set_xlabel(f"{f1_label} (coded)")
+    ax2.set_ylabel(f"{f2_label} (coded)")
+    ax2.set_title(f'Curvas de Nivel: {f1_label} vs {f2_label}')
     
-    # Barra de colores 2D con su etiqueta
     cbar2 = fig.colorbar(contour_f, ax=ax2, extend='both')
     cbar2.set_label(resp_name, rotation=270, labelpad=25)
     
