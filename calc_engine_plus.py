@@ -95,6 +95,7 @@ def preparar_datos(raw, factores, respuestas):
     for f in factores: df[f] = pd.to_numeric(df[f], errors='raise')
     return df
 
+
 def diagnosticar(raw, factores, respuestas):
     k = len(factores); n = len(raw); n_r = len(respuestas)
     if k < 2: return None, "Se requieren 2 o mas factores."
@@ -103,20 +104,15 @@ def diagnosticar(raw, factores, respuestas):
         if not vals.issubset({-1,0,1}) or not {-1,1}.issubset(vals):
             return None, f"Factor {f} mal codificado: {vals}."
     centros = int(raw[factores].eq(0).all(axis=1).sum())
-    esq = raw.loc[~raw[factores].eq(0).all(axis=1), factores]
-    esp = set(itertools.product([-1,1], repeat=k))
-    obs = [tuple(int(v) for v in row) for row in esq.to_numpy()]
-    falt = esp - set(obs)
-    if falt: return None, f"Faltan {len(falt)} esquinas."
-    if centros > 0 and n == 2**k + 1 and centros == 1 and n_r >= 2:
-        return VIA_2, f"{2**k} esquinas + 1 centro / {n_r} bloques."
-    if centros == 0 and n == 2**k and n_r >= 2:
-        return VIA_1, f"{2**k} esquinas / {n_r} replicas."
-    if centros == 0 and n == 2**k and n_r == 1:
-        return VIA_3, f"{2**k} esquinas / sin replicas."
+    
     if centros > 0 and n_r >= 2:
         return VIA_2, f"{n} filas / {centros} centro(s) / {n_r} columnas."
+    if centros == 0 and n_r >= 2:
+        return VIA_1, f"{n} esquinas / {n_r} replicas."
+    if centros == 0 and n_r == 1:
+        return VIA_3, f"{n} esquinas / sin replicas."
     return None, f"No clasificable (n={n}, k={k}, centros={centros}, resp={n_r})."
+
 
 # ---------- Calculos base ----------
 def _calc_effects(df, factores, Nf):
@@ -151,7 +147,7 @@ def _calc_interactions(df, factores):
 
 # ---------- Via 1 con soporte para terminos ----------
 def calcular_via1_con_terminos(df, factores, terms=None):
-    k = len(factores); n_r = df['Grupo'].nunique(); N = len(df); Nf = n_r*2**k
+    k = len(factores); n_r = df['Grupo'].nunique(); N = len(df); Nf = len(df[df['Curvatura']==0]) // n_r
     G = df['Y'].sum(); y = G/N
     SS_t = (df['Y']**2).sum() - G**2/N
     ef_all = _calc_effects(df, factores, Nf)
@@ -190,7 +186,9 @@ def calcular_via1_con_terminos(df, factores, terms=None):
 # ---------- Via 2 con soporte para terminos ----------
 def calcular_via2_con_terminos(df, factores, terms=None):
     k = len(factores); n_b = df['Grupo'].nunique(); N = len(df)
-    Nf = n_b*2**k; Nc = N - Nf; G = df['Y'].sum(); y = G/N
+    Nf = len(df[df['Curvatura']==0]) // n_b if n_b > 0 else len(df[df['Curvatura']==0])
+    Nc = N - Nf; G = df['Y'].sum(); y = G/N
+    
     esq = df[df['Curvatura']==0]; cen = df[df['Curvatura']==1]
     SS_t = (df['Y']**2).sum() - G**2/N
     bt = df.groupby('Grupo')['Y'].sum(); sz = df.groupby('Grupo').size()
@@ -751,3 +749,30 @@ def predecir_y_combinacion(niveles, R):
         y_pred += coef * val  # Suma el efecto del término
         
     return y_pred
+
+def generar_tabla_alias(df, factores):
+    import itertools
+    esq = df[df['Curvatura'] == 0].copy()
+    patrones = {}
+    for r in range(1, len(factores) + 1):
+        for combo in itertools.combinations(factores, r):
+            nombre = '*'.join(combo)
+            patron = tuple(esq[list(combo)].prod(axis=1).tolist())
+            if patron not in patrones:
+                patrones[patron] = []
+            patrones[patron].append(nombre)
+            
+    filas = []
+    for terminos in patrones.values():
+        if len(terminos) > 1:
+            principales = [t for t in terminos if '*' not in t]
+            dobles = [t for t in terminos if len(t.split('*')) == 2]
+            triples = [t for t in terminos if len(t.split('*')) == 3]
+            mayores = [t for t in terminos if len(t.split('*')) > 3]
+            filas.append({
+                'Principales': ', '.join(principales) if principales else '—',
+                'Dobles': ', '.join(dobles) if dobles else '—',
+                'Triples': ', '.join(triples) if triples else '—',
+                'Mayores': ', '.join(mayores) if mayores else '—'
+            })
+    return pd.DataFrame(filas)
