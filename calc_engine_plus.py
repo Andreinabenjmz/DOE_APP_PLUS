@@ -204,12 +204,26 @@ def calcular_via2_con_terminos(df, factores, terms=None):
     SS_r = SS_t - SS_m
     df_r = N - 1 - (df_b + len(ef) + 1)
     if df_r < 1: raise ValueError(f"df_resid={df_r}<1")
-    MS_r = SS_r/df_r; MS_b = SS_b/df_b; F_b = MS_b/MS_r
-    p_b = stats.f.sf(F_b, df_b, df_r)
+    MS_r = SS_r/df_r
+    
+    # --- CORRECCIÓN PARA EVITAR DIVISIÓN POR CERO ---
+    if df_b > 0:
+        MS_b = SS_b/df_b
+        F_b = MS_b/MS_r
+        p_b = stats.f.sf(F_b, df_b, df_r)
+    else:
+        MS_b = np.nan
+        F_b = np.nan
+        p_b = np.nan
+        
     MS_c = SS_c; F_c = MS_c/MS_r; p_c = stats.f.sf(F_c, 1, df_r)
     for e in ef.values():
         e['MS']=e['SS']; e['F']=e['MS']/MS_r; e['p']=stats.f.sf(e['F'],1,df_r)
-    rows = [('Bloques', SS_b, df_b, MS_b, F_b, p_b)]
+        
+    rows = []
+    if df_b > 0:
+        rows.append(('Bloques', SS_b, df_b, MS_b, F_b, p_b))
+        
     for n_, e in ef.items(): rows.append((n_, e['SS'], 1, e['MS'], e['F'], e['p']))
     rows.append(('Curvatura', SS_c, 1, MS_c, F_c, p_c))
     rows.append(('Residual', SS_r, df_r, MS_r, np.nan, np.nan))
@@ -218,9 +232,14 @@ def calcular_via2_con_terminos(df, factores, terms=None):
                        for gl in anova['GL']]
     anova['Sig'] = ['OK' if (pd.notna(p) and p<0.05) else ('-' if pd.isna(p) else 'NO')
                     for p in anova['p']]
+
     # --- NUEVO: Guardar coeficientes de bloques para la ecuación (Solo Vía 2) ---
-    medias_bloques = bt / sz
-    R_intercepto_bloques = medias_bloques.iloc[0] 
+    if df_b > 0:
+        medias_bloques = bt / sz
+        R_intercepto_bloques = medias_bloques.iloc[0] 
+    else:
+        R_intercepto_bloques = y  # Si no hay bloques, usar la media global
+    
     R_coef_bloques = {}
     for i, b in enumerate(medias_bloques.index):
         if i > 0:
