@@ -818,8 +818,7 @@ def generar_tabla_alias(df, factores):
             })
     return pd.DataFrame(filas)
 
-
-def _gen_superficie_3d(R):
+def _gen_superficie_3d(R, resp_name='Respuesta (Y)'):
     if R['via'] == VIA_3:
         return None, None, None, None
         
@@ -868,21 +867,25 @@ def _gen_superficie_3d(R):
     ax1.scatter(x_opt, y_opt, z_opt, color='red', marker='*', s=300, zorder=10, label='Óptimo Predicho')
     ax1.text(x_opt, y_opt, z_opt + margen, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
     ax1.legend()
+    
     ax1.set_xlabel(f"{f1} (coded)")
     ax1.set_ylabel(f"{f2} (coded)")
-    ax1.set_zlabel('Respuesta (Y)')
+    ax1.set_zlabel(resp_name) # <--- CAMBIO AQUÍ (Eje Z dinámico)
     ax1.set_title(f'Superficie: {f1} vs {f2}')
     ax1.set_zlim(limite_inf, limite_sup)
-    fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5, extend='both')
+    
+    # Barra de colores 3D con su etiqueta
+    cbar1 = fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5, extend='both')
+    cbar1.set_label(resp_name, rotation=270, labelpad=15) # <--- CAMBIO AQUÍ
     
     # --- GRÁFICO 2D (CURVAS DE NIVEL) ---
     ax2 = fig.add_subplot(122)
     
-    # 1. FONDO SUAVE (Usamos 50 niveles para que se vea como degradado continuo)
+    # 1. FONDO SUAVE (50 niveles)
     niveles_fondo = np.linspace(z_min, z_max, 50)
     contour_f = ax2.contourf(X, Y, Z, levels=niveles_fondo, cmap='viridis', extend='both')
     
-    # 2. LÍNEAS BLANCAS (Usamos solo 6 niveles para que estén separadas)
+    # 2. LÍNEAS BLANCAS (6 niveles)
     niveles_lineas = np.linspace(z_min, z_max, 6)
     lineas = ax2.contour(X, Y, Z, levels=niveles_lineas, colors='white', linewidths=1.2, alpha=1.0)
     
@@ -894,16 +897,18 @@ def _gen_superficie_3d(R):
         t.set_fontweight('bold')
         t.set_color('white')
         t.set_path_effects([path_effects.withStroke(linewidth=2, foreground='black')])
-    # ---------------------------------
     
     ax2.scatter(x_opt, y_opt, color='red', marker='*', s=200, zorder=10, label='Óptimo Predicho')
     ax2.text(x_opt, y_opt + 0.1, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
     ax2.legend(loc='upper right')
-    # Agregamos " (coded)" para indicar que los ejes están en escala -1 a 1
+    
     ax2.set_xlabel(f"{f1} (coded)")
     ax2.set_ylabel(f"{f2} (coded)")
     ax2.set_title(f'Curvas de Nivel: {f1} vs {f2}')
-    fig.colorbar(contour_f, ax=ax2, extend='both')
+    
+    # Barra de colores 2D con su etiqueta
+    cbar2 = fig.colorbar(contour_f, ax=ax2, extend='both')
+    cbar2.set_label(resp_name, rotation=270, labelpad=15) # <--- CAMBIO AQUÍ
     
     plt.tight_layout()
     fn = 'superficie_3d.png'
