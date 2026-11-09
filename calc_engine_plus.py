@@ -817,3 +817,67 @@ def generar_tabla_alias(df, factores):
                 'Mayores': ', '.join(mayores) if mayores else '—'
             })
     return pd.DataFrame(filas)
+
+def _gen_superficie_3d(R):
+    if R['via'] == VIA_3:
+        return None
+        
+    # 1. Elegir los dos factores más importantes (usualmente A y C, o A y B)
+    # Vamos a graficar A vs C (los índices 0 y 2)
+    factores = R['factores']
+    if len(factores) < 2:
+        return None
+        
+    f1, f2 = factores[0], factores[2] # A y C
+    
+    # 2. Crear una malla (grid) de valores entre -1 y 1
+    x = np.linspace(-1, 1, 50)
+    y = np.linspace(-1, 1, 50)
+    X, Y = np.meshgrid(x, y)
+    
+    # 3. Calcular la respuesta Z usando los coeficientes del modelo
+    # Fijamos los otros factores en su nivel óptimo (los que maximizan Y)
+    Z = np.full_like(X, R['y_bar']) # Empezamos con el intercepto
+    
+    # Sumamos el efecto de f1
+    if f1 in R['effects']:
+        Z += R['effects'][f1]['coef'] * X
+    # Sumamos el efecto de f2
+    if f2 in R['effects']:
+        Z += R['effects'][f2]['coef'] * Y
+        
+    # Sumamos la curvatura de f1 (si existe)
+    term_curv = f"{f1}*{f1}"
+    if term_curv in R['effects']:
+        Z += R['effects'][term_curv]['coef'] * (X**2)
+        
+    # Sumamos la interacción (si existe)
+    term_int = f"{f1}*{f2}"
+    if term_int in R['effects']:
+        Z += R['effects'][term_int]['coef'] * X * Y
+        
+    # 4. Graficar
+    fig = plt.figure(figsize=(14, 6))
+    
+    # Gráfico 3D
+    ax1 = fig.add_subplot(121, projection='3d')
+    surf = ax1.plot_surface(X, Y, Z, cmap='viridis', edgecolor='none', alpha=0.9)
+    ax1.set_xlabel(f1)
+    ax1.set_ylabel(f2)
+    ax1.set_zlabel('Respuesta (Y)')
+    ax1.set_title(f'Superficie de Respuesta: {f1} vs {f2}')
+    fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5)
+    
+    # Gráfico de Contorno 2D
+    ax2 = fig.add_subplot(122)
+    contour = ax2.contourf(X, Y, Z, 20, cmap='viridis')
+    ax2.set_xlabel(f1)
+    ax2.set_ylabel(f2)
+    ax2.set_title(f'Curvas de Nivel: {f1} vs {f2}')
+    fig.colorbar(contour, ax=ax2)
+    
+    plt.tight_layout()
+    fn = 'superficie_3d.png'
+    plt.savefig(fn, bbox_inches='tight')
+    plt.close()
+    return fn
