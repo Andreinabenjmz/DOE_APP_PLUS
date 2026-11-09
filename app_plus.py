@@ -179,7 +179,6 @@ with st.sidebar:
         estudiante = st.text_input("Estudiante", "")
         curso = st.text_input("Curso", "Asignacion")
 
-
         # --- PANEL DE SIMULACIÓN ---
         st.markdown("### 🧪 Simulador de Datos")
         simular_datos = st.checkbox("Generar datos con ecuación matemática (añadir ruido)")
@@ -222,7 +221,6 @@ with st.sidebar:
             ruido = c3.number_input("Ruido (σ)", value=0.1)
             y_max = c4.number_input("Y máximo", value=5.0)
             y_min = 0.0 # Asumimos que Y no puede ser negativa
-
 
         # --- BOTÓN PROCESAR ---
         if st.button("Procesar", type='primary'):
@@ -322,7 +320,6 @@ if st.session_state.stage == 'upload':
     Al igual que en Minitab, la app te da los numeros, pero las decisiones son tuyas.
     """)
     st.info("Empieza subiendo un archivo en la barra lateral")
-
 elif st.session_state.stage == 'design':
     df = st.session_state.df
     factores = st.session_state.factores
@@ -364,7 +361,6 @@ elif st.session_state.stage == 'design':
 
     if st.button("Ir a Modelo completo", type='primary'):
         st.session_state.stage = 'full_model'; st.rerun()
-
 
 elif st.session_state.stage == 'full_model':
     st.title("Paso 2 - Modelo completo")
