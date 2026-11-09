@@ -877,16 +877,15 @@ def _gen_superficie_3d(R):
     # --- GRÁFICO 2D (CURVAS DE NIVEL) ---
     ax2 = fig.add_subplot(122)
     
-    # Reducimos a 6 niveles para que las líneas estén separadas
-    niveles = np.linspace(z_min, z_max, 6)
+    # 1. FONDO SUAVE (Usamos 50 niveles para que se vea como degradado continuo)
+    niveles_fondo = np.linspace(z_min, z_max, 50)
+    contour_f = ax2.contourf(X, Y, Z, levels=niveles_fondo, cmap='viridis', extend='both')
     
-    # 1. Fondo de colores
-    contour_f = ax2.contourf(X, Y, Z, levels=niveles, cmap='viridis', extend='both')
+    # 2. LÍNEAS BLANCAS (Usamos solo 6 niveles para que estén separadas)
+    niveles_lineas = np.linspace(z_min, z_max, 6)
+    lineas = ax2.contour(X, Y, Z, levels=niveles_lineas, colors='white', linewidths=1.2, alpha=1.0)
     
-    # 2. Dibujamos las líneas blancas
-    lineas = ax2.contour(X, Y, Z, levels=niveles, colors='white', linewidths=1.2, alpha=1.0)
-    
-    # 3. Etiquetas blancas con borde negro (SIN colors ni fontweight en clabel)
+    # 3. Etiquetas blancas con borde negro
     import matplotlib.patheffects as path_effects
     txt = ax2.clabel(lineas, inline=True, inline_spacing=5, fontsize=9, fmt='%1.2f')
     
