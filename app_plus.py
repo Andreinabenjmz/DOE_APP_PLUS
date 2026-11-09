@@ -818,17 +818,26 @@ elif st.session_state.stage == 'diagnostics':
         st.info("💡 **Nota sobre la nomenclatura:** En la fórmula del modelo de Statsmodels, el símbolo `~` significa 'en función de', los `+` suman términos, y los `:` indican interacciones entre variables. El término `Q(\"...\")` es la sintaxis de Statsmodels para manejar nombres de columnas.")
     # ------------------------------------    
 
-    # --- AQUÍ VA EL NUEVO GRÁFICO DE SUPERFICIE 3D ---
+    # --- NUEVO: GRÁFICO DE SUPERFICIE 3D ---
     st.markdown("---")
     st.markdown("### 5. Superficie de Respuesta 3D")
-    st.markdown("Este gráfico muestra cómo interactúan la Concentración (A) y el pH (C) manteniendo los demás factores fijos en su nivel óptimo.")
-    fn_surf = ce._gen_superficie_3d(R)
+    st.markdown("Este gráfico muestra cómo interactúan los dos primeros factores (A y C) manteniendo los demás fijos.")
+    
+    # Llamamos a la función y capturamos los 4 valores que retorna
+    fn_surf, x_opt, y_opt, z_opt = ce._gen_superficie_3d(R)
+    
     if fn_surf and os.path.exists(fn_surf):
         st.image(fn_surf, use_container_width=True)
+        
+        # Mostrar los valores numéricos del óptimo predicho
+        if x_opt is not None:
+            st.success(f"**Óptimo predicho:** Se alcanza una respuesta máxima de **Y = {z_opt:.3f}** "
+                       f"en los niveles codificados: **{R['factores'][0]} = {x_opt:.2f}** y "
+                       f"**{R['factores'][2]} = {y_opt:.2f}**.")
     else:
         st.info("La superficie 3D requiere que el modelo incluya al menos dos efectos principales.")
-    # --------------------------------------------------
-
+    # --------------------------------------
+    
     # --- BOTONES DE NAVEGACIÓN ---
     c1, c2 = st.columns(2)
     if c1.button("Volver a Refinar"): st.session_state.stage = 'refine'; st.rerun()
