@@ -95,7 +95,6 @@ def _detectar_columnas(raw):
         factores.append(c)
     return factores, respuestas, descartar
 
-
 # ---------- Sidebar ----------
 with st.sidebar:
     st.header("Configuracion")
@@ -104,6 +103,41 @@ with st.sidebar:
             del st.session_state[k]
         st.rerun()
 
+    # 1. GENERADOR DE MATRIZ (Arriba, para que lo descarguen primero)
+    st.markdown("### 🛠️ ¿No tienes matriz?")
+    with st.expander("Generar Matriz 2^(5-1) (19 corridas)"):
+        if st.button("Generar Matriz"):
+            import itertools
+            import numpy as np
+            
+            esquinas = list(itertools.product([-1, 1], repeat=4))
+            datos = []
+            for fila in esquinas:
+                A, B, C, D = fila
+                E = A * B * C * D 
+                datos.append([A, B, C, D, E])
+                
+            for _ in range(3):
+                datos.append([0, 0, 0, 0, 0])
+                
+            df_matriz = pd.DataFrame(datos, columns=['A', 'B', 'C', 'D', 'E'])
+            df_matriz = df_matriz.sample(frac=1).reset_index(drop=True)
+            df_matriz.insert(0, 'Corrida', range(1, len(df_matriz) + 1))
+            
+            csv = df_matriz.to_csv(index=False).encode('utf-8')
+            st.success("¡Matriz generada!")
+            # Mostramos solo las primeras 5 filas para no hacer la barra gigante
+            st.dataframe(df_matriz.head(5), use_container_width=True) 
+            
+            st.download_button(
+                label="⬇️ Descargar Matriz (CSV)",
+                data=csv,
+                file_name='matriz_fraccionada_2_5-1.csv',
+                mime='text/csv',
+            )
+    st.markdown("---")
+
+    # 2. CARGADOR DE ARCHIVOS
     uploaded = st.file_uploader("Archivo Excel o CSV", type=['xlsx','csv'])
     if uploaded:
         try:
@@ -117,6 +151,7 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Error: {e}")
 
+    # 3. RESTO DE LA CONFIGURACIÓN (Solo si hay un archivo cargado)
     if st.session_state.raw is not None:
         raw = st.session_state.raw
         st.markdown("### Columnas")
@@ -134,7 +169,7 @@ with st.sidebar:
                     nuevo = st.text_input(f"Nombre para '{c}':", value=c, key=f"rename_{c}")
                     if nuevo.strip() != "" and nuevo.strip() != c:
                         mapping_nombres[c] = nuevo.strip()
-                        
+        
         # --- NUEVO: PANEL PARA RENOMBRAR LA RESPUESTA ---
         mapping_resp = {}
         if len(resp) > 0:
@@ -143,7 +178,6 @@ with st.sidebar:
                     nuevo_r = st.text_input(f"Nombre para '{r}':", value=r, key=f"rename_resp_{r}")
                     if nuevo_r.strip() != "" and nuevo_r.strip() != r:
                         mapping_resp[r] = nuevo_r.strip()
-        # ------------------------------------------------
         
         # --- PANEL PARA CONFIGURAR NIVELES -1 / +1 ---
         mapeos_niveles = {}
@@ -152,6 +186,7 @@ with st.sidebar:
                 st.markdown("Elige qué nivel corresponde al **bajo (-1)** y cuál al **alto (+1)**.")
                 for c in cols:
                     col_real = mapping_nombres.get(c, c)
+                    # CORRECCIÓN AQUÍ: Usamos `c` para leer el excel, no `col_real`
                     vals = list(dict.fromkeys(raw[c].dropna().tolist()))
                     
                     if set(vals).issubset({-1,0,1,-1.0,0.0,1.0}):
@@ -171,9 +206,7 @@ with st.sidebar:
                         mapeos_niveles[col_real] = {v_bajo: -1, v_mid: 0, v_alto: 1}
             st.markdown("---")
 
-        via = st.radio("Via",
-                       options=[ce.VIA_1, ce.VIA_2, ce.VIA_3],
-                       format_func=lambda v: f"{ce.VIA_INFO[v]['nombre']}")
+        via = st.radio("Via", options=[ce.VIA_1, ce.VIA_2, ce.VIA_3], format_func=lambda v: f"{ce.VIA_INFO[v]['nombre']}")
         objetivo = st.radio("Objetivo del análisis:", ["Maximizar la respuesta", "Minimizar la respuesta"], index=0)
 
         use_spec = st.checkbox("Especificacion (target +/- tol)")
