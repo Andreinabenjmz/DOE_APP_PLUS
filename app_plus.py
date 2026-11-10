@@ -844,6 +844,13 @@ elif st.session_state.stage == 'diagnostics':
         resp_name = st.session_state.get(f"rename_resp_{r_orig}", r_orig)
     else:
         resp_name = 'Respuesta'
+    # --- NUEVO: OBTENER NOMBRES EN TIEMPO REAL DE LOS FACTORES ---
+    nombres_reales_factores = {}
+    if 'factores' in st.session_state and st.session_state.factores:
+        for f in st.session_state.factores:
+            # Buscamos si el usuario lo renombró en la barra lateral
+            nombres_reales_factores[f] = st.session_state.get(f"rename_{f}", f)
+    # -------------------------------------------------------------
         
     fn_surf, x_opt, y_opt, z_opt = ce._gen_superficie_3d(R, resp_name=resp_name)
     
