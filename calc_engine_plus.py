@@ -17,6 +17,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from scipy.interpolate import griddata # <--- Agrega esto arriba si no está
 
 warnings.filterwarnings('default')
 
@@ -922,3 +923,56 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)', nombres_reales=None):
     plt.close()
     
     return fn, x_opt, y_opt, z_opt
+
+def _gen_superficie_interpolada(df, R, f1='A', f2='C', resp_name='Respuesta (Y)'):
+    if R['via'] == VIA_3:
+        return None
+        
+    # Extraer los datos reales del dataframe
+    x_data = df[f1].values
+    y_data = df[f2].values
+    z_data = df['Y'].values
+
+    # Crear una malla más fina para que la superficie se vea suave
+    xi = np.linspace(-1, 1, 100)
+    yi = np.linspace(-1, 1, 100)
+    Xi, Yi = np.meshgrid(xi, yi)
+
+    # Interpolar los datos (método cúbico para que se vea orgánico como Minitab)
+    try:
+        Zi = griddata((x_data, y_data), z_data, (Xi, Yi), method='cubic')
+    except:
+        # Si falla el cúbico por falta de datos, usar lineal
+        Zi = griddata((x_data, y_data), z_data, (Xi, Yi), method='linear')
+
+    fig = plt.figure(figsize=(14, 6))
+    
+    # --- GRÁFICO 3D INTERPOLADO ---
+    ax1 = fig.add_subplot(121, projection='3d')
+    surf = ax1.plot_surface(Xi, Yi, Zi, cmap='viridis', edgecolor='none', alpha=0.9)
+    # Pintamos los puntos reales como esferas rojas para que se vean
+    ax1.scatter(x_data, y_data, z_data, color='red', s=50, zorder=10, label='Datos Reales')
+    
+    ax1.set_xlabel(f"{f1} (coded)")
+    ax1.set_ylabel(f"{f2} (coded)")
+    ax1.set_zlabel(resp_name)
+    ax1.set_title(f'Superficie Interpolada (Datos Reales): {f1} vs {f2}')
+    ax1.legend()
+    fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5)
+    
+    # --- GRÁFICO 2D CONTORNO INTERPOLADO ---
+    ax2 = fig.add_subplot(122)
+    contour = ax2.contourf(Xi, Yi, Zi, 20, cmap='viridis')
+    ax2.scatter(x_data, y_data, color='red', s=20, edgecolor='white', zorder=10)
+    
+    ax2.set_xlabel(f"{f1} (coded)")
+    ax2.set_ylabel(f"{f2} (coded)")
+    ax2.set_title(f'Contorno Interpolado (Datos Reales): {f1} vs {f2}')
+    fig.colorbar(contour, ax=ax2)
+    
+    plt.tight_layout()
+    fn = 'superficie_interpolada.png'
+    plt.savefig(fn, bbox_inches='tight')
+    plt.close()
+    
+    return fn
