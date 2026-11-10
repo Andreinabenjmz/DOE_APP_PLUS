@@ -222,56 +222,33 @@ with st.sidebar:
         estudiante = st.text_input("Estudiante", "")
         curso = st.text_input("Curso", "Asignacion")
 
-        # --- PANEL DE SIMULACIÓN ---
+        # --- PANEL DE SIMULACIÓN OPTIMIZADO ---
         st.markdown("### 🧪 Simulador de Datos")
-        simular_datos = st.checkbox("Generar datos con ecuación matemática (añadir ruido)")
+        st.markdown("El programa generará los datos basándose en un modelo biológico predefinido.")
+        simular_datos = st.checkbox("Activar simulación (Ecuación + Ruido)")
         
         if simular_datos:
-            # 1. Inicializar los valores por defecto (solo la primera vez)
-            if 'sim_b0' not in st.session_state:
-                st.session_state.sim_b0 = 2.5
-                st.session_state.sim_bA = 0.6
-                st.session_state.sim_bB = 0.3
-                st.session_state.sim_bC = -0.5
-                st.session_state.sim_bD = 0.2
-                st.session_state.sim_bE = -0.4
-                st.session_state.sim_bAA = -0.2
+            with st.expander("⚙️ Ver/Editar parámetros del modelo (Opcional)"):
+                st.markdown("Estos coeficientes representan el comportamiento esperado según la literatura:")
+                c1, c2 = st.columns(2)
+                b0 = c1.number_input("Intercepto (β0)", value=2.5, key="sim_b0")
+                bA = c2.number_input("Efecto A (Concentración)", value=0.6, key="sim_bA")
+                bB = c1.number_input("Efecto B (Relación)", value=0.3, key="sim_bB")
+                bC = c2.number_input("Efecto C (pH)", value=-0.5, key="sim_bC")
+                bD = c1.number_input("Efecto D (Tiempo)", value=0.2, key="sim_bD")
+                bE = c2.number_input("Efecto E (BSA)", value=-0.4, key="sim_bE")
+                bAA = c1.number_input("Curvatura A²", value=-0.2, key="sim_bAA")
+                
+                st.markdown("**Interacciones biológicas plausibles:**")
+                c3, c4 = st.columns(2)
+                bAC = c3.number_input("Interacción A*C", value=0.3, key="sim_bAC")
+                bBE = c4.number_input("Interacción B*E", value=-0.2, key="sim_bBE")
 
-            # 2. Botón para autogenerar
-            if st.button("🎲 Autogenerar coeficientes plausibles"):
-                st.session_state.sim_b0 = float(np.random.uniform(2.0, 3.5))
-                st.session_state.sim_bA = float(np.random.uniform(0.4, 0.8))
-                st.session_state.sim_bB = float(np.random.uniform(0.2, 0.5))
-                st.session_state.sim_bC = float(-np.random.uniform(0.3, 0.7))
-                st.session_state.sim_bD = float(np.random.uniform(0.1, 0.3))
-                st.session_state.sim_bE = float(-np.random.uniform(0.3, 0.6))
-                st.session_state.sim_bAA = float(-np.random.uniform(0.1, 0.3))
-                st.rerun() # Fuerza a la pantalla a actualizarse con los nuevos valores
-
-            # 3. Las cajitas de texto (permiten edición manual)
-            st.markdown("Ajusta los coeficientes (o usa el dado):")
-            c1, c2 = st.columns(2)
-            b0 = c1.number_input("Intercepto (β0)", key="sim_b0", format="%.3f")
-            bA = c2.number_input("Efecto A (+)", key="sim_bA", format="%.3f")
-            bB = c1.number_input("Efecto B (+)", key="sim_bB", format="%.3f")
-            bC = c2.number_input("Efecto C (-)", key="sim_bC", format="%.3f")
-            bD = c1.number_input("Efecto D (+)", key="sim_bD", format="%.3f")
-            bE = c2.number_input("Efecto E (-)", key="sim_bE", format="%.3f")
-            bAA = c1.number_input("Curvatura A² (-)", key="sim_bAA", format="%.3f")
-            # --- NUEVO: COEFICIENTES DE INTERACCIÓN ---
-            c3, c4 = st.columns(2)
-            bAC = c3.number_input("Interacción A*C", value=0.3, key="sim_bAC", format="%.3f")
-            bBE = c4.number_input("Interacción B*E", value=-0.2, key="sim_bBE", format="%.3f")
-            # -------------------------------------------
-
-            # Ruido y límites
-            c3, c4 = st.columns(2)
-            ruido = c3.number_input("Ruido (σ)", value=0.1)
-            y_max = c4.number_input("Y máximo", value=5.0)
-            # Añadimos el Y mínimo aquí:
-            y_min = st.number_input("Y mínimo permitido", value=0.0)
-
-    
+            st.markdown("**Ruido experimental (Error):**")
+            c5, c6 = st.columns(2)
+            ruido = c5.number_input("Desviación del ruido (σ)", value=0.3, key="sim_noise")
+            y_max = c6.number_input("Límite superior (Y máx)", value=5.0, key="sim_ymax")
+            y_min = 0.0
 
         # --- BOTÓN PROCESAR ---
         if st.button("Procesar", type='primary'):
@@ -298,25 +275,25 @@ with st.sidebar:
                             lo, hi = min(vals), max(vals)
                             rp[f] = rp[f].map({lo: -1, hi: 1})
 
-                # --- NUEVO: APLICAR SIMULACIÓN AQUÍ ADENTRO ---
+                # --- APLICAR SIMULACIÓN ---
                 if simular_datos:
-                    # Creamos la columna Y aplicando la ecuación
-                    rp['Y_simulado'] = (b0 + bA * rp[cols[0]] + bB * rp[cols[1]] + bC * rp[cols[2]] + bD * rp[cols[3]] + bE * rp[cols[4]] + bAA * (rp[cols[0]]**2)
-                    + bAC * rp[cols[0]] * rp[cols[2]]   # Interacción A*C
-                    + bBE * rp[cols[1]] * rp[cols[4]]   # Interacción B*E
-                    )
+                    rp['Y_simulado'] = (b0 + 
+                                      bA * rp[cols[0]] + 
+                                      bB * rp[cols[1]] + 
+                                      bC * rp[cols[2]] + 
+                                      bD * rp[cols[3]] + 
+                                      bE * rp[cols[4]] + 
+                                      bAA * (rp[cols[0]]**2) +
+                                      bAC * rp[cols[0]] * rp[cols[2]] +  # Interacción A*C
+                                      bBE * rp[cols[1]] * rp[cols[4]])   # Interacción B*E
                     
-                    # Añadimos el ruido gaussiano a TODOS los puntos (esquinas y centros)
+                    # Añadimos el ruido gaussiano a TODOS los puntos
                     ruido_aleatorio = np.random.normal(0, ruido, len(rp))
                     rp['Y_simulado'] += ruido_aleatorio
                     
-                    # Recortar al rango biológico
                     rp['Y_simulado'] = np.clip(rp['Y_simulado'], y_min, y_max)
-                    
-                    # Asignar a la columna de respuesta (la primera que hayas seleccionado)
                     rp[resp[0]] = rp['Y_simulado']
                     rp = rp.drop(columns=['Y_simulado'])
-                # ------------------------------------------------
                 
                 # 3. Convertir respuestas a numérico y preparar datos
                 for c in resp:
