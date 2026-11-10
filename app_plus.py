@@ -861,42 +861,68 @@ elif st.session_state.stage == 'diagnostics':
             st.code(formula, language="text")
             
         st.info("💡 **Nota sobre la nomenclatura:** En la fórmula del modelo de Statsmodels, el símbolo `~` significa 'en función de', los `+` suman términos, y los `:` indican interacciones entre variables. El término `Q(\"...\")` es la sintaxis de Statsmodels para manejar nombres de columnas.")
-    # ------------------------------------    
+    # ------------------------------------   
 
-    # --- NUEVO: GRÁFICO DE SUPERFICIE 3D ---
+    # --- NUEVO: GRÁFICO DE SUPERFICIE 3D Y DE INTERPOLACIÓN ---
     st.markdown("---")
-    st.markdown("### 5. Superficie de Respuesta 3D")
+    st.markdown("### 5. Superficie de Respuesta")
     st.markdown("Este gráfico muestra cómo interactúan los dos primeros factores (A y C) manteniendo los demás fijos.")
     
-    # Llamamos a la función y capturamos los 4 valores que retorna
-    # Obtener el nombre de la respuesta que seleccionaste en el Excel
-    # Obtener el nombre de la respuesta EN TIEMPO REAL desde la barra lateral
+    # Obtener el nombre de la respuesta (igual que antes)
     if 'respuesta' in st.session_state and st.session_state.respuesta:
         r_orig = st.session_state.respuesta[0]
-        # Buscamos si el usuario escribió un nombre nuevo en el renombrador
         resp_name = st.session_state.get(f"rename_resp_{r_orig}", r_orig)
     else:
         resp_name = 'Respuesta'
-    # --- NUEVO: OBTENER NOMBRES EN TIEMPO REAL DE LOS FACTORES ---
+
+    # Obtener los nombres reales de los factores
     nombres_reales_factores = {}
     if 'factores' in st.session_state and st.session_state.factores:
         for f in st.session_state.factores:
-            # Buscamos si el usuario lo renombró en la barra lateral
             nombres_reales_factores[f] = st.session_state.get(f"rename_{f}", f)
-    # -------------------------------------------------------------
+            
+    # --- SELECTOR DE TIPO DE GRÁFICO ---
+    tipo_grafico = st.radio(
+        "Selecciona cómo quieres generar la superficie:",
+        ["📈 Modelo Teórico (Ecuación matemática)", "🗺️ Interpolación de Datos (Estilo Minitab)"],
+        horizontal=True
+    )
+
+    if tipo_grafico == "📈 Modelo Teórico (Ecuación matemática)":
+        # Gráfico original basado en la ecuación
+        fn_surf, x_opt, y_opt, z_opt = ce._gen_superficie_3d(R, resp_name=resp_name, nombres_reales=nombres_reales_factores)
         
-    fn_surf, x_opt, y_opt, z_opt = ce._gen_superficie_3d(R, resp_name=resp_name)
-    
-    if fn_surf and os.path.exists(fn_surf):
-        st.image(fn_surf, use_container_width=True)
-        
-        # Mostrar los valores numéricos del óptimo predicho
-        if x_opt is not None:
-            st.success(f"**Óptimo predicho:** Se alcanza una respuesta máxima de **Y = {z_opt:.3f}** "
-                       f"en los niveles codificados: **{R['factores'][0]} = {x_opt:.2f}** y "
-                       f"**{R['factores'][2]} = {y_opt:.2f}**.")
+        if fn_surf and os.path.exists(fn_surf):
+            st.image(fn_surf, use_container_width=True)
+            if x_opt is not None:
+                st.success(f"**Óptimo predicho:** Se alcanza una respuesta máxima de **Y = {z_opt:.3f}** "
+                           f"en los niveles codificados: **{R['factores'][0]} = {x_opt:.2f}** y "
+                           f"**{R['factores'][2]} = {y_opt:.2f}**.")
+        else:
+            st.info("La superficie 3D requiere que el modelo incluya al menos dos efectos principales.")
+
     else:
-        st.info("La superficie 3D requiere que el modelo incluya al menos dos efectos principales.")
+        # Gráfico NUEVO de interpolación (Estilo Minitab)
+        # Asegúrate de que ce._gen_superficie_interpolada exista en calc_engine_plus.py
+        if 'factores' in st.session_state and st.session_state.factores:
+            f1_raw = st.session_state.factores[0]
+            f2_raw = st.session_state.factores[2]
+            
+            fn_interp = ce._gen_superficie_interpolada(
+                df, R, 
+                f1=f1_raw, 
+                f2=f2_raw, 
+                resp_name=resp_name
+            )
+            
+            if fn_interp and os.path.exists(fn_interp):
+                st.image(fn_interp, use_container_width=True)
+                st.info("💡 Este gráfico conecta tus 19 datos reales (puntos rojos). Fíjate cómo la curvatura central refleja tus puntos centrales experimentales.")
+            else:
+                st.warning("No se pudo generar el gráfico de interpolación con los datos actuales.")
+        else:
+            st.warning("Faltan factores para generar el gráfico.")
+
     # --------------------------------------
     
     # --- BOTONES DE NAVEGACIÓN ---
