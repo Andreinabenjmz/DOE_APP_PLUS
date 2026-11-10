@@ -258,6 +258,11 @@ with st.sidebar:
             bD = c1.number_input("Efecto D (+)", key="sim_bD", format="%.3f")
             bE = c2.number_input("Efecto E (-)", key="sim_bE", format="%.3f")
             bAA = c1.number_input("Curvatura A² (-)", key="sim_bAA", format="%.3f")
+            # --- NUEVO: COEFICIENTES DE INTERACCIÓN ---
+            c3, c4 = st.columns(2)
+            bAC = c3.number_input("Interacción A*C", value=0.3, key="sim_bAC", format="%.3f")
+            bBE = c4.number_input("Interacción B*E", value=-0.2, key="sim_bBE", format="%.3f")
+            # -------------------------------------------
 
             # Ruido y límites
             c3, c4 = st.columns(2)
@@ -296,13 +301,10 @@ with st.sidebar:
                 # --- NUEVO: APLICAR SIMULACIÓN AQUÍ ADENTRO ---
                 if simular_datos:
                     # Creamos la columna Y aplicando la ecuación
-                    rp['Y_simulado'] = (b0 + 
-                                      bA * rp[cols[0]] + 
-                                      bB * rp[cols[1]] + 
-                                      bC * rp[cols[2]] + 
-                                      bD * rp[cols[3]] + 
-                                      bE * rp[cols[4]] + 
-                                      bAA * (rp[cols[0]]**2))
+                    rp['Y_simulado'] = (b0 + bA * rp[cols[0]] + bB * rp[cols[1]] + bC * rp[cols[2]] + bD * rp[cols[3]] + bE * rp[cols[4]] + bAA * (rp[cols[0]]**2)
+                    + bAC * rp[cols[0]] * rp[cols[2]]   # Interacción A*C
+                    + bBE * rp[cols[1]] * rp[cols[4]]   # Interacción B*E
+                    )
                     
                     # Añadimos el ruido gaussiano a TODOS los puntos (esquinas y centros)
                     ruido_aleatorio = np.random.normal(0, ruido, len(rp))
