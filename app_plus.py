@@ -152,7 +152,7 @@ with st.sidebar:
                 st.markdown("Elige qué nivel corresponde al **bajo (-1)** y cuál al **alto (+1)**.")
                 for c in cols:
                     col_real = mapping_nombres.get(c, c)
-                    vals = list(dict.fromkeys(raw[col_real].dropna().tolist()))
+                    vals = list(dict.fromkeys(raw[c].dropna().tolist()))
                     
                     if set(vals).issubset({-1,0,1,-1.0,0.0,1.0}):
                         continue
