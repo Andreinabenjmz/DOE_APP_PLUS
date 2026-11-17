@@ -1323,6 +1323,7 @@ elif st.session_state.stage == 'ccd_diag':
     estilo = st.radio("Estetica del grafico",
                       ["Clasico (estilo articulo)", "Moderno (viridis)"],
                       horizontal=True)
+    estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
     cmaps = {}
     if estilo_key == 'clasico':
         for r in respc:
@@ -1331,7 +1332,6 @@ elif st.session_state.stage == 'ccd_diag':
                                     index=0, key=f"cmap_{r}")
     etiqueta_x = st.text_input("Etiqueta eje X", value=f1)
     etiqueta_y = st.text_input("Etiqueta eje Y", value=f2)
-    estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
 
     usar_punto = st.checkbox("Marcar punto de validacion")
     punto = None
