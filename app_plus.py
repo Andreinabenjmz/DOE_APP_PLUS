@@ -1327,15 +1327,6 @@ elif st.session_state.stage == 'ccd_diag':
                           horizontal=True)
         etiqueta_x = st.text_input("Etiqueta eje X", value=f1)
         etiqueta_y = st.text_input("Etiqueta eje Y", value=f2)
-        usar_punto = st.checkbox("Marcar punto de validacion")
-        punto = None
-        if usar_punto:
-            pcols = st.columns(2)
-            punto = {}
-            for i, f in enumerate([f1, f2]):
-                c_def = Rs[respc[0]]['coding'][f]['c']
-                with pcols[i]:
-                    punto[f] = st.number_input(f, value=float(c_def), key=f"pv_{f}")
         cmaps, niveles_txt = {}, {}
         for r in respc:
             cmaps[r] = st.selectbox(f"Colormap para {r}",
@@ -1348,6 +1339,31 @@ elif st.session_state.stage == 'ccd_diag':
         st.form_submit_button("Aplicar configuracion", type='primary')
 
     estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
+
+    st.markdown("### Probar un punto")
+    st.caption("Escribe los valores de los dos factores (en sus unidades reales, ej. 0.7 y 0.7), "
+               "pulsa **Aplicar punto**, y la estrella mostrara su ubicacion en los graficos. "
+               "Debajo veras las respuestas que el modelo predice en ese punto.")
+    with st.form("ccd_form_punto"):
+        pcols = st.columns(2)
+        punto = {}
+        for i, f in enumerate([f1, f2]):
+            c_def = Rs[respc[0]]['coding'][f]['c']
+            with pcols[i]:
+                punto[f] = st.number_input(f"{f} (unidades del experimento)", value=float(c_def),
+                                           step=0.05, format="%.6g", key=f"pv_{f}")
+        st.form_submit_button("Aplicar punto")
+
+    mcols = st.columns(len(respc))
+    for i, (r, R) in enumerate(Rs.items()):
+        pfull = {f: R['coding'][f]['c'] for f in R['factores']}
+        pfull.update(punto)
+        with mcols[i]:
+            st.metric(f"Prediccion de {r} en el punto", f"{ce_rsm.predecir_ccd(R, pfull):.3f}")
+
+    mostrar_estrella = st.checkbox("Mostrar estrella en los graficos", value=True,
+                                   key='ccd_mostrar_punto')
+    punto_plot = punto if mostrar_estrella else None
 
     mostrar_cont = st.checkbox("Mostrar contornos individuales", key='ccd_mostrar_cont')
     if mostrar_cont:
@@ -1365,44 +1381,53 @@ elif st.session_state.stage == 'ccd_diag':
             figs[f'contorno_{r}'] = ce_rsm.graf_contorno_ccd(
                 R, f1, f2, estilo=estilo_key, cmap=cmaps.get(r),
                 niveles=(niv if niv else None),
-                xlabel=etiqueta_x, ylabel=etiqueta_y, punto=punto)
+                xlabel=etiqueta_x, ylabel=etiqueta_y, punto=punto_plot)
             st.image(figs[f'contorno_{r}'], use_container_width=True)
 
-    st.markdown("### Contorno combinado (region de interes, estilo fig. 4)")
-    st.caption("Ajusta las metas y objetivos, pulsa **Aplicar metas** y luego activa la casilla de mostrar.")
+    st.markdown("### Contorno combinado (region de interes)")
+    st.caption("Define los rangos aceptables de cada respuesta y pulsa **Aplicar metas**.")
     rawc = st.session_state.df_ccd_raw
     with st.form("ccd_form_metas"):
         rangos = {}
         cc1, cc2 = st.columns(2)
         for i, r in enumerate(respc):
             rmin = float(rawc[r].min()); rmax = float(rawc[r].max())
+            paso = max((rmax - rmin) / 20, 1e-6)
             with (cc1 if i % 2 == 0 else cc2):
-                lo = st.number_input(f"{r} - minimo aceptable", value=rmin, key=f"lo_{r}")
-                hi = st.number_input(f"{r} - maximo aceptable", value=rmax, key=f"hi_{r}")
+                lo = st.number_input(f"{r} - minimo aceptable", value=rmin,
+                                     step=paso, format="%.6g", key=f"lo_{r}")
+                hi = st.number_input(f"{r} - maximo aceptable", value=rmax,
+                                     step=paso, format="%.6g", key=f"hi_{r}")
             rangos[r] = (lo, hi)
-        st.markdown("**Objetivos de optimizacion (deseabilidad de Derringer-Suich):**")
-        objetivos = {}
-        for r in respc:
-            tipo = st.selectbox(f"Objetivo de {r}", ["max", "min", "target"],
-                                format_func=lambda t: {"max": "Maximizar", "min": "Minimizar",
-                                                       "target": "Apuntar a un target"}[t],
-                                key=f"obj_{r}")
-            o = {'tipo': tipo, 'lo': rangos[r][0], 'hi': rangos[r][1]}
-            if tipo == 'target':
-                o['target'] = st.number_input(f"Target de {r}",
-                                              value=float((rangos[r][0] + rangos[r][1]) / 2),
-                                              key=f"tgt_{r}")
-            objetivos[r] = o
         st.form_submit_button("Aplicar metas", type='primary')
 
     mostrar_comb = st.checkbox("Mostrar contorno combinado", key='ccd_mostrar_comb')
     if mostrar_comb:
         figs['superposicion'] = ce_rsm.graf_superposicion_ccd(
-            list(Rs.values()), rangos, f1, f2, punto=punto,
+            list(Rs.values()), rangos, f1, f2, punto=punto_plot,
             xlabel=etiqueta_x, ylabel=etiqueta_y)
         st.image(figs['superposicion'], use_container_width=True)
 
-    st.markdown("### Optimizacion (deseabilidad de Derringer-Suich)")
+    st.markdown("### Optimizacion (opcional)")
+    st.caption("Configura los objetivos y pulsa **Aplicar objetivos**; "
+               "luego usa **Optimizar ahora** cuando quieras. No afecta los graficos.")
+    with st.form("ccd_form_obj"):
+        objetivos = {}
+        for r in respc:
+            rlo, rhi = rangos[r]
+            paso = max((rhi - rlo) / 20, 1e-6)
+            tipo = st.selectbox(f"Objetivo de {r}", ["max", "min", "target"],
+                                format_func=lambda t: {"max": "Maximizar", "min": "Minimizar",
+                                                       "target": "Apuntar a un target"}[t],
+                                key=f"obj_{r}")
+            o = {'tipo': tipo, 'lo': rlo, 'hi': rhi}
+            if tipo == 'target':
+                o['target'] = st.number_input(f"Target de {r}",
+                                              value=float((rlo + rhi) / 2),
+                                              step=paso, format="%.6g", key=f"tgt_{r}")
+            objetivos[r] = o
+        st.form_submit_button("Aplicar objetivos", type='primary')
+
     if st.button("Optimizar ahora"):
         opt = ce_rsm.optimizar_ccd(list(Rs.values()), objetivos)
         st.session_state.opt_ccd = opt if opt is not None else 'SIN_SOLUCION'
