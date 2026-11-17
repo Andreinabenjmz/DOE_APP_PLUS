@@ -1316,38 +1316,54 @@ elif st.session_state.stage == 'ccd_diag':
         st.image(fn, use_container_width=True)
 
     st.markdown("### Contornos de respuesta")
-    st.caption("Configura todo y pulsa **Aplicar configuracion**; nada se recalcula mientras editas.")
+    st.caption("Configura todo y pulsa **Aplicar configuracion**; nada se recalcula mientras editas. "
+               "Para etiquetas de ejes con unidades (ej. Na2SeO3 (M)), usa "
+               "'Renombrar factores' en la barra lateral.")
     with st.form("ccd_form_cfg"):
+        fijo_sel = st.selectbox("Factor FIJO del CONTORNO COMBINADO "
+                                "(los otros dos factores forman los ejes X e Y del combinado)",
+                                facc, index=len(facc) - 1, key="ccd_fijo_sel")
+        ejes = [f for f in facc if f != fijo_sel]
         c1f, c2f = st.columns(2)
-        f1 = c1f.selectbox("Factor eje X", facc, index=0)
-        f2_opts = [f for f in facc if f != f1]
-        f2 = c2f.selectbox("Factor eje Y", f2_opts, index=len(f2_opts) - 1)
+        f1 = c1f.selectbox("Eje X del combinado (VARIA)", ejes, index=0)
+        f2_opts = [f for f in ejes if f != f1]
+        f2 = c2f.selectbox("Eje Y del combinado (VARIA)", f2_opts, index=len(f2_opts) - 1)
+        st.caption(f"**Contorno combinado:** varian X = **{f1}** e Y = **{f2}**; "
+                   f"**{fijo_sel}** queda fijo en el valor indicado abajo.")
+
+        st.markdown("**Ejes de cada contorno individual** "
+                    "(independientes entre si y del combinado; el/los factor(es) restante(s) quedan fijos):")
+        ejes_ind = {}
+        for r in respc:
+            cx, cy = st.columns(2)
+            xi = cx.selectbox(f"Eje X - {r}", facc, index=facc.index(f1), key=f"xi_{r}")
+            yi_opts = [f for f in facc if f != xi]
+            yi = cy.selectbox(f"Eje Y - {r}", yi_opts,
+                              index=(yi_opts.index(f2) if f2 in yi_opts else 0), key=f"yi_{r}")
+            ejes_ind[r] = (xi, yi)
+
+        st.markdown("**Valores de los factores cuando estan FIJOS** "
+                    "(se usan en los graficos donde ese factor NO esta en los ejes):")
+        fcols = st.columns(len(facc))
+        fijos = {}
+        for i, f in enumerate(facc):
+            codf = Rs[respc[0]]['coding'][f]
+            paso = max(codf['half'] / 10, 1e-6)
+            with fcols[i]:
+                fijos[f] = st.number_input(f, value=float(codf['c']),
+                                           step=paso, format="%.6g", key=f"fijo_{f}")
+        for f in facc:
+            usado = any(f in t.split('*') for R in Rs.values() for t in R['terms'])
+            if usado:
+                st.info(f"'{f}' esta en el modelo reducido: si algun grafico lo fija, "
+                        "ese valor SÍ afecta ese grafico.")
+            else:
+                st.caption(f"'{f}' fue eliminado del modelo como no significativo: "
+                           "fijarlo no afecta los resultados.")
+
         estilo = st.radio("Estetica del grafico",
                           ["Clasico (estilo articulo)", "Moderno (viridis)"],
                           horizontal=True)
-        etiqueta_x = st.text_input("Etiqueta eje X", value=f1)
-        etiqueta_y = st.text_input("Etiqueta eje Y", value=f2)
-        otros = [f for f in facc if f not in (f1, f2)]
-        fijos = {}
-        if otros:
-            st.markdown("**Factores fijos** (valores en que se mantienen los factores "
-                        "que no estan en los ejes; por defecto, el centro del diseno):")
-            fcols = st.columns(len(otros))
-            for i, f in enumerate(otros):
-                codf = Rs[respc[0]]['coding'][f]
-                paso = max(codf['half'] / 10, 1e-6)
-                with fcols[i]:
-                    fijos[f] = st.number_input(f, value=float(codf['c']),
-                                               step=paso, format="%.6g", key=f"fijo_{f}")
-            for f in otros:
-                usado = any(f in t.split('*') for R in Rs.values() for t in R['terms'])
-                if usado:
-                    st.info(f"'{f}' esta en el modelo reducido: su valor fijo "
-                            "SI afecta las predicciones y los graficos.")
-                else:
-                    c_val = Rs[respc[0]]['coding'][f]['c']
-                    st.caption(f"'{f}' fue eliminado del modelo como no significativo: "
-                               f"esta fijado en {c_val:g} (centro del diseno) y no afecta los resultados.")
         cmaps, niveles_txt = {}, {}
         for r in respc:
             cmaps[r] = st.selectbox(f"Colormap para {r}",
@@ -1362,9 +1378,10 @@ elif st.session_state.stage == 'ccd_diag':
     estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
 
     st.markdown("### Probar un punto")
-    st.caption("Escribe los valores de los dos factores (en sus unidades reales, ej. 0.7 y 0.7), "
-               "pulsa **Aplicar punto**, y la estrella mostrara su ubicacion en los graficos. "
-               "Debajo veras las respuestas que el modelo predice en ese punto.")
+    st.caption(f"Escribe los valores de **{f1}** (eje X) y **{f2}** (eje Y) en unidades reales, "
+               "pulsa **Aplicar punto** y la estrella marcara su ubicacion en TODOS los graficos. "
+               "Los factores fijos usan los valores del formulario anterior. "
+               "Debajo: respuestas que el modelo predice en ese punto.")
     with st.form("ccd_form_punto"):
         pcols = st.columns(2)
         punto = {}
@@ -1384,11 +1401,20 @@ elif st.session_state.stage == 'ccd_diag':
 
     mostrar_estrella = st.checkbox("Mostrar estrella en los graficos", value=True,
                                    key='ccd_mostrar_punto')
-    punto_plot = punto if mostrar_estrella else None
+
+    def _star_para(xi, yi):
+        if not mostrar_estrella:
+            return None
+        return {xi: punto.get(xi, fijos.get(xi)), yi: punto.get(yi, fijos.get(yi))}
 
     mostrar_cont = st.checkbox("Mostrar contornos individuales", key='ccd_mostrar_cont')
     if mostrar_cont:
         for r, R in Rs.items():
+            xi, yi = ejes_ind[r]
+            if xi == yi:
+                st.error(f"Contorno de {r}: el eje X y el Y son el mismo factor ('{xi}'). "
+                         "Elige dos factores distintos en el formulario.")
+                continue
             txt = niveles_txt.get(r, '').strip()
             niv = None
             if txt:
@@ -1400,9 +1426,8 @@ elif st.session_state.stage == 'ccd_diag':
                     niv = None
                     st.warning(f"Niveles de {r} no validos; se usaran niveles automaticos.")
             figs[f'contorno_{r}'] = ce_rsm.graf_contorno_ccd(
-                R, f1, f2, estilo=estilo_key, cmap=cmaps.get(r),
-                niveles=(niv if niv else None),
-                xlabel=etiqueta_x, ylabel=etiqueta_y, punto=punto_plot, fijos=fijos)
+                R, xi, yi, estilo=estilo_key, cmap=cmaps.get(r),
+                niveles=(niv if niv else None), punto=_star_para(xi, yi), fijos=fijos)
             st.image(figs[f'contorno_{r}'], use_container_width=True)
 
     st.markdown("### Contorno combinado (region de interes)")
@@ -1425,8 +1450,7 @@ elif st.session_state.stage == 'ccd_diag':
     mostrar_comb = st.checkbox("Mostrar contorno combinado", key='ccd_mostrar_comb')
     if mostrar_comb:
         figs['superposicion'] = ce_rsm.graf_superposicion_ccd(
-            list(Rs.values()), rangos, f1, f2, punto=punto_plot,
-            xlabel=etiqueta_x, ylabel=etiqueta_y, fijos=fijos)
+            list(Rs.values()), rangos, f1, f2, punto=_star_para(f1, f2), fijos=fijos)
         st.image(figs['superposicion'], use_container_width=True)
 
     st.markdown("### Optimizacion (opcional)")
