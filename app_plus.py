@@ -1327,6 +1327,27 @@ elif st.session_state.stage == 'ccd_diag':
                           horizontal=True)
         etiqueta_x = st.text_input("Etiqueta eje X", value=f1)
         etiqueta_y = st.text_input("Etiqueta eje Y", value=f2)
+        otros = [f for f in facc if f not in (f1, f2)]
+        fijos = {}
+        if otros:
+            st.markdown("**Factores fijos** (valores en que se mantienen los factores "
+                        "que no estan en los ejes; por defecto, el centro del diseno):")
+            fcols = st.columns(len(otros))
+            for i, f in enumerate(otros):
+                codf = Rs[respc[0]]['coding'][f]
+                paso = max(codf['half'] / 10, 1e-6)
+                with fcols[i]:
+                    fijos[f] = st.number_input(f, value=float(codf['c']),
+                                               step=paso, format="%.6g", key=f"fijo_{f}")
+            for f in otros:
+                usado = any(f in t.split('*') for R in Rs.values() for t in R['terms'])
+                if usado:
+                    st.info(f"'{f}' esta en el modelo reducido: su valor fijo "
+                            "SI afecta las predicciones y los graficos.")
+                else:
+                    c_val = Rs[respc[0]]['coding'][f]['c']
+                    st.caption(f"'{f}' fue eliminado del modelo como no significativo: "
+                               f"esta fijado en {c_val:g} (centro del diseno) y no afecta los resultados.")
         cmaps, niveles_txt = {}, {}
         for r in respc:
             cmaps[r] = st.selectbox(f"Colormap para {r}",
@@ -1356,7 +1377,7 @@ elif st.session_state.stage == 'ccd_diag':
 
     mcols = st.columns(len(respc))
     for i, (r, R) in enumerate(Rs.items()):
-        pfull = {f: R['coding'][f]['c'] for f in R['factores']}
+        pfull = {f: fijos.get(f, R['coding'][f]['c']) for f in R['factores']}
         pfull.update(punto)
         with mcols[i]:
             st.metric(f"Prediccion de {r} en el punto", f"{ce_rsm.predecir_ccd(R, pfull):.3f}")
@@ -1381,7 +1402,7 @@ elif st.session_state.stage == 'ccd_diag':
             figs[f'contorno_{r}'] = ce_rsm.graf_contorno_ccd(
                 R, f1, f2, estilo=estilo_key, cmap=cmaps.get(r),
                 niveles=(niv if niv else None),
-                xlabel=etiqueta_x, ylabel=etiqueta_y, punto=punto_plot)
+                xlabel=etiqueta_x, ylabel=etiqueta_y, punto=punto_plot, fijos=fijos)
             st.image(figs[f'contorno_{r}'], use_container_width=True)
 
     st.markdown("### Contorno combinado (region de interes)")
@@ -1405,7 +1426,7 @@ elif st.session_state.stage == 'ccd_diag':
     if mostrar_comb:
         figs['superposicion'] = ce_rsm.graf_superposicion_ccd(
             list(Rs.values()), rangos, f1, f2, punto=punto_plot,
-            xlabel=etiqueta_x, ylabel=etiqueta_y)
+            xlabel=etiqueta_x, ylabel=etiqueta_y, fijos=fijos)
         st.image(figs['superposicion'], use_container_width=True)
 
     st.markdown("### Optimizacion (opcional)")

@@ -275,10 +275,10 @@ def predecir_ccd(R, punto):
 # ------------------------------------------------------------------
 # 8. GRAFICOS
 # ------------------------------------------------------------------
-def _zgrid(R, f1, f2, XX, YY):
-    """Evaluacion VECTORIZADA (numpy) del modelo sobre una malla 2D;
-    los demas factores se fijan en su centro. Miles de veces mas rapido
-    que predecir punto por punto."""
+def _zgrid(R, f1, f2, XX, YY, fijos=None):
+    """Evaluacion VECTORIZADA (numpy) del modelo sobre una malla 2D.
+    Los factores no graficados se fijan en su centro, o en el valor
+    indicado en 'fijos' ({factor: valor_real})."""
     cod = R['coding']
     fs = R['factores']
     xc = {}
@@ -287,6 +287,8 @@ def _zgrid(R, f1, f2, XX, YY):
             xc[f] = (XX - cod[f]['c']) / cod[f]['half']
         elif f == f2:
             xc[f] = (YY - cod[f]['c']) / cod[f]['half']
+        elif fijos and f in fijos:
+            xc[f] = np.full_like(XX, (fijos[f] - cod[f]['c']) / cod[f]['half'])
         else:
             xc[f] = np.zeros_like(XX)
     Z = np.full_like(XX, float(R['model'].params['Intercept']))
@@ -301,7 +303,8 @@ def _zgrid(R, f1, f2, XX, YY):
 
 
 def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None,
-                      estilo='moderno', cmap=None, xlabel=None, ylabel=None, punto=None):
+                      estilo='moderno', cmap=None, xlabel=None, ylabel=None, punto=None,
+                      fijos=None):
     """Contorno 2D de una respuesta sobre el plano (f1, f2), otros factores al centro."""
     created = ax is None
     if created:
@@ -310,7 +313,7 @@ def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None,
     x = np.linspace(c1['lo'], c1['hi'], 200)
     y = np.linspace(c2['lo'], c2['hi'], 200)
     XX, YY = np.meshgrid(x, y)
-    Z = _zgrid(R, f1, f2, XX, YY)
+    Z = _zgrid(R, f1, f2, XX, YY, fijos=fijos)
     if niveles is None:
         niveles = 12
     if estilo == 'clasico':
@@ -339,7 +342,8 @@ def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None,
         plt.savefig(fn, bbox_inches='tight'); plt.close()
         return fn
 
-def graf_superposicion_ccd(Rs, rangos, f1, f2, punto=None, ax=None, xlabel=None, ylabel=None):
+def graf_superposicion_ccd(Rs, rangos, f1, f2, punto=None, ax=None, xlabel=None, ylabel=None,
+                           fijos=None):
     """Rs: lista de dicts R (uno por respuesta). rangos: {nombre_resp: (lo, hi)}.
     Dibuja region blanca donde TODAS las respuestas estan en rango (estilo fig. 4 del articulo)."""
     created = False
@@ -354,7 +358,7 @@ def graf_superposicion_ccd(Rs, rangos, f1, f2, punto=None, ax=None, xlabel=None,
     ok = np.ones_like(XX, dtype=bool)
     cols = ['#1f5fb4', '#b41f1f', '#1f9b4f', '#8a2be2']
     for idx, R in enumerate(Rs):
-        Z = _zgrid(R, f1, f2, XX, YY)
+        Z = _zgrid(R, f1, f2, XX, YY, fijos=fijos)
         lo, hi = rangos[R['respuesta']]
         ok &= (Z >= lo) & (Z <= hi)
         ax.contour(XX, YY, Z, levels=[lo, hi], colors=[cols[idx % 4]]*2,
