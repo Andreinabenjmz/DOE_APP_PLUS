@@ -295,24 +295,25 @@ def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None,
         niveles = 12
     if estilo == 'clasico':
         cf = ax.contourf(XX, YY, Z, levels=niveles, cmap=(cmap or 'terrain'))
-        if isinstance(niveles, (list, tuple, np.ndarray)):
-            lv = list(niveles)
-            line_lv = lv[::2] if len(lv) > 7 else lv
-        else:
-            line_lv = 8
+        # Las lineas van EXACTAMENTE en las fronteras de las bandas de color
+        line_lv = list(cf.levels)
+        if len(line_lv) > 8:
+            line_lv = line_lv[::2]   # subsampleo, pero siempre sobre fronteras reales
         cl = ax.contour(XX, YY, Z, levels=line_lv, colors='k', linewidths=0.7)
         ax.clabel(cl, fmt='%g', fontsize=8)
         ax.grid(color='white', alpha=0.3, linewidth=0.6)
     else:
         cf = ax.contourf(XX, YY, Z, levels=niveles, cmap='viridis')
-        cl = ax.contour(XX, YY, Z, levels=8, colors='white', linewidths=0.8)
+        cl = ax.contour(XX, YY, Z, levels=cf.levels, colors='white', linewidths=0.8)
         ax.clabel(cl, fmt='%.2g', fontsize=8)
     if punto:
         ax.plot(punto[f1], punto[f2], 'r*', ms=14, mec='k')
     ax.set_xlabel(xlabel or f1)
     ax.set_ylabel(ylabel or f2)
     ax.set_title(titulo or f"Contorno: {R['respuesta']}")
-    plt.colorbar(cf, ax=ax, label=R['respuesta'])
+    cb = plt.colorbar(cf, ax=ax, label=R['respuesta'])
+    if isinstance(niveles, (list, tuple, np.ndarray)) and len(niveles) <= 15:
+        cb.set_ticks(list(niveles))
     if created:
         fn = f"contorno_{R['respuesta']}_{f1}_{f2}.png"
         plt.savefig(fn, bbox_inches='tight'); plt.close()
