@@ -185,38 +185,66 @@ def ajustar_ccd(df_raw, factores, ycol, alpha_elim=0.05, eliminar=True):
 # 6. ECUACIONES
 # ------------------------------------------------------------------
 def _eq_str(m, terms, factores, coding=None):
-    import sympy as sp
-    sims = {f: sp.symbols(f) for f in factores}
-    expr = float(m.params['Intercept'])
+    """Ecuacion legible. Si coding=None, en unidades codificadas;
+    si no, expandida a unidades reales (x_i = (X_i - c_i)/h_i) con numpy puro."""
+    idx = {f: i for i, f in enumerate(factores)}
+    n = len(factores)
+    b = {}  # (i,) lineal, (i, i) cuadrado, (i, j) i<j cruzado; clave tupla ordenada
+    b0 = float(m.params['Intercept'])
     for t in terms:
         pn = _param(t, factores)
-        b = float(m.params[pn])
-        partes = t.split('*')
-        prod = 1
-        for p in partes:
-            prod *= sims[p]
-        expr += b * prod
-    if coding is not None:  # sustituir codificada -> real
-        for f in factores:
-            c = coding[f]
-            expr = expr.subs(sims[f], (sims[f] - c['c']) / c['half'])
-    expr = sp.expand(expr)
-    cero = {v: 0 for v in sims.values()}
-    b0 = float(expr.subs(cero))
-    resto = sp.expand(expr - b0)
-    s = f"Y = {b0:.4f} "
-    for f in factores:
-        # Derivadas en el origen: aislan cada coeficiente aunque haya terminos cruzados
-        c1 = float(sp.diff(resto, sims[f]).subs(cero))
-        c2 = float(sp.diff(resto, sims[f], 2).subs(cero)) / 2
-        if abs(c1) > 1e-12: s += f"{c1:+.4f}*{f} "
-        if abs(c2) > 1e-12: s += f"{c2:+.4f}*{f}² "
+        coef = float(m.params[pn])
+        p = t.split('*')
+        if len(p) == 1:
+            b[(idx[p[0]],)] = b.get((idx[p[0]],), 0.0) + coef
+        else:
+            i, j = sorted((idx[p[0]], idx[p[1]]))
+            b[(i, j)] = b.get((i, j), 0.0) + coef
+
+    if coding is None:  # codificada
+        s = f"Y = {b0:.4f} "
+        for f, i in idx.items():
+            if (i,) in b: s += f"{b[(i,)]:+.4f}*{f} "
+            if (i, i) in b: s += f"{b[(i,i)]:+.4f}*{f}² "
+        fs = list(factores)
+        for x in range(n):
+            for y in range(x + 1, n):
+                if (x, y) in b:
+                    s += f"{b[(x,y)]:+.4f}*{fs[x]}*{fs[y]} "
+        return s.strip()
+
+    # Expandida a unidades reales: x_i = (X_i - c_i)/h_i
+    c = [coding[f]['c'] for f in factores]
+    h = [coding[f]['half'] for f in factores]
+    B0 = b0
+    lin = [0.0] * n
+    cuad = [0.0] * n
+    cruz = {}
+    for k, v in b.items():
+        if len(k) == 1:
+            i = k[0]
+            B0 += v * (-c[i] / h[i])
+            lin[i] += v / h[i]
+    for k, v in b.items():
+        if len(k) == 1:
+            continue
+        i, j = k
+        if i == j:
+            B0 += v * (c[i] ** 2 / h[i] ** 2)
+            lin[i] += v * (-2 * c[i] / h[i] ** 2)
+            cuad[i] += v / h[i] ** 2
+        else:
+            B0 += v * (c[i] * c[j] / (h[i] * h[j]))
+            lin[i] += v * (-c[j] / (h[i] * h[j]))
+            lin[j] += v * (-c[i] / (h[i] * h[j]))
+            cruz[(i, j)] = v / (h[i] * h[j])
+    s = f"Y = {B0:.4f} "
+    for f, i in idx.items():
+        if abs(lin[i]) > 1e-12: s += f"{lin[i]:+.4f}*{f} "
+        if abs(cuad[i]) > 1e-12: s += f"{cuad[i]:+.4f}*{f}² "
     fs = list(factores)
-    for i in range(len(fs)):
-        for j in range(i+1, len(fs)):
-            coef = float(sp.diff(resto, sims[fs[i]], sims[fs[j]]).subs(cero))
-            if abs(coef) > 1e-12:
-                s += f"{coef:+.4f}*{fs[i]}*{fs[j]} "
+    for (i, j), v in sorted(cruz.items()):
+        s += f"{v:+.4f}*{fs[i]}*{fs[j]} "
     return s.strip()
 
 # ------------------------------------------------------------------
@@ -249,7 +277,8 @@ def predecir_ccd(R, punto):
 # ------------------------------------------------------------------
 def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None):
     """Contorno 2D de una respuesta sobre el plano (f1, f2), otros factores al centro."""
-    if ax is None:
+    created = ax is None
+    if created:
         fig, ax = plt.subplots(figsize=(7, 5.5))
     c1, c2 = R['coding'][f1], R['coding'][f2]
     x = np.linspace(c1['lo'], c1['hi'], 200)
@@ -269,7 +298,7 @@ def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None):
     ax.set_xlabel(f1); ax.set_ylabel(f2)
     ax.set_title(titulo or f"Contorno: {R['respuesta']}")
     plt.colorbar(cf, ax=ax, label=R['respuesta'])
-    if ax is None:
+    if created:
         fn = f"contorno_{R['respuesta']}_{f1}_{f2}.png"
         plt.savefig(fn, bbox_inches='tight'); plt.close()
         return fn
