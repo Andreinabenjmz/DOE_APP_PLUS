@@ -1315,34 +1315,33 @@ elif st.session_state.stage == 'ccd_diag':
         figs[f'resid_{r}'] = fn
         st.image(fn, use_container_width=True)
 
-    st.markdown("### Contornos de respuesta")
-    st.caption("Configura todo y pulsa **Aplicar configuracion**; nada se recalcula mientras editas. "
-               "Para etiquetas de ejes con unidades (ej. Na2SeO3 (M)), usa "
-               "'Renombrar factores' en la barra lateral.")
+    st.markdown("### Contornos individuales (cada uno con sus propios ejes)")
+    st.caption("1) Define los ejes de cada contorno y los del combinado. "
+               "2) Pulsa **Aplicar configuracion**. 3) Activa las casillas de mostrar, de arriba hacia abajo. "
+               "Para etiquetas con unidades (ej. Na2SeO3 (M)), usa 'Renombrar factores' en la barra lateral.")
     with st.form("ccd_form_cfg"):
-        fijo_sel = st.selectbox("Factor FIJO del CONTORNO COMBINADO "
-                                "(los otros dos factores forman los ejes X e Y del combinado)",
-                                facc, index=len(facc) - 1, key="ccd_fijo_sel")
-        ejes = [f for f in facc if f != fijo_sel]
-        c1f, c2f = st.columns(2)
-        f1 = c1f.selectbox("Eje X del combinado (VARIA)", ejes, index=0)
-        f2_opts = [f for f in ejes if f != f1]
-        f2 = c2f.selectbox("Eje Y del combinado (VARIA)", f2_opts, index=len(f2_opts) - 1)
-        st.caption(f"**Contorno combinado:** varian X = **{f1}** e Y = **{f2}**; "
-                   f"**{fijo_sel}** queda fijo en el valor indicado abajo.")
-
-        st.markdown("**Ejes de cada contorno individual** "
-                    "(independientes entre si y del combinado; el/los factor(es) restante(s) quedan fijos):")
+        st.markdown("**A. Ejes de los contornos INDIVIDUALES** "
+                    "(independientes entre si; el/los factor(es) restante(s) queda(n) fijo(s)):")
         ejes_ind = {}
         for r in respc:
             cx, cy = st.columns(2)
-            xi = cx.selectbox(f"Eje X - {r}", facc, index=facc.index(f1), key=f"xi_{r}")
+            xi = cx.selectbox(f"Eje X - {r}", facc, index=0, key=f"xi_{r}")
             yi_opts = [f for f in facc if f != xi]
-            yi = cy.selectbox(f"Eje Y - {r}", yi_opts,
-                              index=(yi_opts.index(f2) if f2 in yi_opts else 0), key=f"yi_{r}")
+            yi = cy.selectbox(f"Eje Y - {r}", yi_opts, index=len(yi_opts) - 1, key=f"yi_{r}")
             ejes_ind[r] = (xi, yi)
 
-        st.markdown("**Valores de los factores cuando estan FIJOS** "
+        st.markdown("**B. Contorno COMBINADO** (debe usar un solo par de ejes; "
+                    "elija primero que factor queda fijo):")
+        fijo_sel = st.selectbox("Factor FIJO del combinado (no aparece en los ejes)",
+                                facc, index=len(facc) - 1, key="ccd_fijo_sel")
+        ejes = [f for f in facc if f != fijo_sel]
+        c1f, c2f = st.columns(2)
+        f1 = c1f.selectbox("Eje X del combinado", ejes, index=0, key="ccd_comb_x")
+        f2_opts = [f for f in ejes if f != f1]
+        f2 = c2f.selectbox("Eje Y del combinado", f2_opts, index=len(f2_opts) - 1, key="ccd_comb_y")
+        st.caption(f"Combinado: varian X = **{f1}** e Y = **{f2}**; fijo **{fijo_sel}**.")
+
+        st.markdown("**C. Valores de los factores cuando estan FIJOS** "
                     "(se usan en los graficos donde ese factor NO esta en los ejes):")
         fcols = st.columns(len(facc))
         fijos = {}
@@ -1377,43 +1376,26 @@ elif st.session_state.stage == 'ccd_diag':
 
     estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
 
-    st.markdown("### Probar un punto")
-    st.caption(f"Escribe los valores de **{f1}** (eje X) y **{f2}** (eje Y) en unidades reales, "
-               "pulsa **Aplicar punto** y la estrella marcara su ubicacion en TODOS los graficos. "
-               "Los factores fijos usan los valores del formulario anterior. "
-               "Debajo: respuestas que el modelo predice en ese punto.")
-    with st.form("ccd_form_punto"):
-        pcols = st.columns(2)
-        punto = {}
-        for i, f in enumerate([f1, f2]):
-            c_def = Rs[respc[0]]['coding'][f]['c']
-            with pcols[i]:
-                punto[f] = st.number_input(f"{f} (unidades del experimento)", value=float(c_def),
-                                           step=0.05, format="%.6g", key=f"pv_{f}")
-        st.form_submit_button("Aplicar punto")
-
-    mcols = st.columns(len(respc))
-    for i, (r, R) in enumerate(Rs.items()):
-        pfull = {f: fijos.get(f, R['coding'][f]['c']) for f in R['factores']}
-        pfull.update(punto)
-        with mcols[i]:
-            st.metric(f"Prediccion de {r} en el punto", f"{ce_rsm.predecir_ccd(R, pfull):.3f}")
-
-    mostrar_estrella = st.checkbox("Mostrar estrella en los graficos", value=True,
-                                   key='ccd_mostrar_punto')
+    # Punto de validacion: se lee del estado de la sesion (la seccion para
+    # editarlo esta al final de la pantalla). Asi la estrella aplica a los
+    # graficos aunque la seccion visual este despues de ellos.
+    punto = {f1: float(st.session_state.get(f"pv_{f1}", Rs[respc[0]]['coding'][f1]['c'])),
+             f2: float(st.session_state.get(f"pv_{f2}", Rs[respc[0]]['coding'][f2]['c']))}
+    mostrar_estrella = bool(st.session_state.get('ccd_mostrar_punto', True))
 
     def _star_para(xi, yi):
         if not mostrar_estrella:
             return None
         return {xi: punto.get(xi, fijos.get(xi)), yi: punto.get(yi, fijos.get(yi))}
 
+    # ---- Contornos individuales (se generan PRIMERO) ----
     mostrar_cont = st.checkbox("Mostrar contornos individuales", key='ccd_mostrar_cont')
     if mostrar_cont:
         for r, R in Rs.items():
             xi, yi = ejes_ind[r]
             if xi == yi:
                 st.error(f"Contorno de {r}: el eje X y el Y son el mismo factor ('{xi}'). "
-                         "Elige dos factores distintos en el formulario.")
+                         "Elige dos factores distintos en el formulario (seccion A).")
                 continue
             txt = niveles_txt.get(r, '').strip()
             niv = None
@@ -1430,6 +1412,14 @@ elif st.session_state.stage == 'ccd_diag':
                 niveles=(niv if niv else None), punto=_star_para(xi, yi), fijos=fijos)
             st.image(figs[f'contorno_{r}'], use_container_width=True)
 
+    # ---- Probar un punto ----
+    ejes_comb_ok = (f1 in ejes) and (f2 in [f for f in ejes if f != f1]) and (f1 != f2)
+    if not ejes_comb_ok:
+        st.error(f"Los ejes del combinado (X = {f1}, Y = {f2}) no son validos con "
+                 f"'{fijo_sel}' como factor fijo. Vuelve al formulario, revisa la seccion B "
+                 "y pulsa 'Aplicar configuracion'.")
+
+    # ---- Contorno combinado (se genera DESPUES) ----
     st.markdown("### Contorno combinado (region de interes)")
     st.caption("Define los rangos aceptables de cada respuesta y pulsa **Aplicar metas**.")
     rawc = st.session_state.df_ccd_raw
@@ -1448,10 +1438,34 @@ elif st.session_state.stage == 'ccd_diag':
         st.form_submit_button("Aplicar metas", type='primary')
 
     mostrar_comb = st.checkbox("Mostrar contorno combinado", key='ccd_mostrar_comb')
-    if mostrar_comb:
+    if mostrar_comb and ejes_comb_ok:
         figs['superposicion'] = ce_rsm.graf_superposicion_ccd(
             list(Rs.values()), rangos, f1, f2, punto=_star_para(f1, f2), fijos=fijos)
         st.image(figs['superposicion'], use_container_width=True)
+
+    st.markdown("### Probar un punto (opcional)")
+    st.caption(f"Escribe los valores de **{f1}** (eje X del combinado) y **{f2}** (eje Y) "
+               "en unidades reales y pulsa **Aplicar punto**. La estrella se dibuja en los graficos "
+               "de arriba (contornos individuales y combinado) y las predicciones se muestran aqui. "
+               "Los factores fijos usan los valores del formulario de configuracion.")
+    with st.form("ccd_form_punto"):
+        pcols = st.columns(2)
+        for i, f in enumerate([f1, f2]):
+            c_def = Rs[respc[0]]['coding'][f]['c']
+            with pcols[i]:
+                st.number_input(f"{f} (unidades del experimento)", value=float(c_def),
+                                step=0.05, format="%.6g", key=f"pv_{f}")
+        st.form_submit_button("Aplicar punto")
+
+    punto_vivo = {f1: float(st.session_state.get(f"pv_{f1}", Rs[respc[0]]['coding'][f1]['c'])),
+                  f2: float(st.session_state.get(f"pv_{f2}", Rs[respc[0]]['coding'][f2]['c']))}
+    mcols = st.columns(len(respc))
+    for i, (r, R) in enumerate(Rs.items()):
+        pfull = {f: fijos.get(f, R['coding'][f]['c']) for f in R['factores']}
+        pfull.update(punto_vivo)
+        with mcols[i]:
+            st.metric(f"Prediccion de {r} en el punto", f"{ce_rsm.predecir_ccd(R, pfull):.3f}")
+    st.checkbox("Mostrar estrella en los graficos", value=True, key='ccd_mostrar_punto')
 
     st.markdown("### Optimizacion (opcional)")
     st.caption("Configura los objetivos y pulsa **Aplicar objetivos**; "
@@ -1483,6 +1497,7 @@ elif st.session_state.stage == 'ccd_diag':
         pred_txt = " | ".join(f"{k} = {v:.3f}" for k, v in opt['predicciones'].items())
         st.success(f"Mejor punto (deseabilidad = {opt['deseabilidad']:.3f}): "
                    f"{opt['punto']}  ->  {pred_txt}")
+
 
     st.session_state.figs_ccd = figs
     c1, c2 = st.columns(2)
