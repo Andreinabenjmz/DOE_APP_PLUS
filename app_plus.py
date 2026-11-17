@@ -167,6 +167,12 @@ with st.sidebar:
         cols = st.multiselect("Factores", raw.columns.tolist(), default=fact_cands, key="mis_factores")
         resp = st.multiselect("Respuesta(s)", raw.columns.tolist(), default=resp_cands, key="mi_respuesta")
 
+        # Deteccion temprana de CCD: si aplica, se ocultan las opciones de vía 2^k
+        es_ccd = ce_rsm.es_diseno_ccd(raw, cols) if cols else False
+        if es_ccd:
+            st.success("Diseno CCD detectado: se usara la ruta de Superficie de Respuesta. "
+                       "Las opciones de via, objetivo y especificacion no aplican.")
+
         # --- PANEL PARA RENOMBRAR ---
         mapping_nombres = {}
         if len(cols) > 0:
@@ -188,7 +194,7 @@ with st.sidebar:
         
         # --- PANEL PARA CONFIGURAR NIVELES -1 / +1 ---
         mapeos_niveles = {}
-        if len(cols) > 0:
+        if len(cols) > 0 and not es_ccd:
             with st.expander("⚙️ Configurar Niveles (-1 / +1)", expanded=False):
                 st.markdown("Elige qué nivel corresponde al **bajo (-1)** y cuál al **alto (+1)**.")
                 for c in cols:
@@ -213,49 +219,56 @@ with st.sidebar:
                         mapeos_niveles[col_real] = {v_bajo: -1, v_mid: 0, v_alto: 1}
             st.markdown("---")
 
-        via = st.radio("Via", options=[ce.VIA_1, ce.VIA_2, ce.VIA_3], format_func=lambda v: f"{ce.VIA_INFO[v]['nombre']}")
-        objetivo = st.radio("Objetivo del análisis:", ["Maximizar la respuesta", "Minimizar la respuesta"], index=0)
+        if es_ccd:
+            via = ce_rsm.VIA_CCD
+            objetivo = "Maximizar la respuesta"
+            spec = None
+        else:
+            via = st.radio("Via", options=[ce.VIA_1, ce.VIA_2, ce.VIA_3], format_func=lambda v: f"{ce.VIA_INFO[v]['nombre']}")
+            objetivo = st.radio("Objetivo del análisis:", ["Maximizar la respuesta", "Minimizar la respuesta"], index=0)
 
-        use_spec = st.checkbox("Especificacion (target +/- tol)")
-        spec = None
-        if use_spec:
-            c1, c2 = st.columns(2)
-            target = c1.number_input("Target", value=24.0)
-            tol = c2.number_input("Tolerancia", value=4.0)
-            spec = {'target': target, 'tol': tol}
+            use_spec = st.checkbox("Especificacion (target +/- tol)")
+            spec = None
+            if use_spec:
+                c1, c2 = st.columns(2)
+                target = c1.number_input("Target", value=24.0)
+                tol = c2.number_input("Tolerancia", value=4.0)
+                spec = {'target': target, 'tol': tol}
 
         st.markdown("### Contexto")
         nombre = st.text_input("Proceso", "Analisis 2^k")
         estudiante = st.text_input("Estudiante", "")
         curso = st.text_input("Curso", "Asignacion")
 
-        # --- PANEL DE SIMULACIÓN OPTIMIZADO ---
-        st.markdown("### 🧪 Simulador de Datos")
-        st.markdown("El programa generará los datos basándose en un modelo biológico predefinido.")
-        simular_datos = st.checkbox("Activar simulación (Ecuación + Ruido)")
+        simular_datos = False
+        if not es_ccd:
+            # --- PANEL DE SIMULACIÓN OPTIMIZADO ---
+            st.markdown("### 🧪 Simulador de Datos")
+            st.markdown("El programa generará los datos basándose en un modelo biológico predefinido.")
+            simular_datos = st.checkbox("Activar simulación (Ecuación + Ruido)")
         
-        if simular_datos:
-            with st.expander("⚙️ Ver/Editar parámetros del modelo (Opcional)"):
-                st.markdown("Estos coeficientes representan el comportamiento esperado según la literatura:")
-                c1, c2 = st.columns(2)
-                b0 = c1.number_input("Intercepto (β0)", value=2.5, key="sim_b0")
-                bA = c2.number_input("Efecto A (Concentración)", value=0.6, key="sim_bA")
-                bB = c1.number_input("Efecto B (Relación)", value=0.3, key="sim_bB")
-                bC = c2.number_input("Efecto C (pH)", value=-0.5, key="sim_bC")
-                bD = c1.number_input("Efecto D (Tiempo)", value=0.2, key="sim_bD")
-                bE = c2.number_input("Efecto E (BSA)", value=-0.4, key="sim_bE")
-                bAA = c1.number_input("Curvatura A²", value=-0.2, key="sim_bAA")
+            if simular_datos:
+                with st.expander("⚙️ Ver/Editar parámetros del modelo (Opcional)"):
+                    st.markdown("Estos coeficientes representan el comportamiento esperado según la literatura:")
+                    c1, c2 = st.columns(2)
+                    b0 = c1.number_input("Intercepto (β0)", value=2.5, key="sim_b0")
+                    bA = c2.number_input("Efecto A (Concentración)", value=0.6, key="sim_bA")
+                    bB = c1.number_input("Efecto B (Relación)", value=0.3, key="sim_bB")
+                    bC = c2.number_input("Efecto C (pH)", value=-0.5, key="sim_bC")
+                    bD = c1.number_input("Efecto D (Tiempo)", value=0.2, key="sim_bD")
+                    bE = c2.number_input("Efecto E (BSA)", value=-0.4, key="sim_bE")
+                    bAA = c1.number_input("Curvatura A²", value=-0.2, key="sim_bAA")
                 
-                st.markdown("**Interacciones biológicas plausibles:**")
-                c3, c4 = st.columns(2)
-                bAC = c3.number_input("Interacción A*C", value=0.3, key="sim_bAC")
-                bBE = c4.number_input("Interacción B*E", value=-0.2, key="sim_bBE")
+                    st.markdown("**Interacciones biológicas plausibles:**")
+                    c3, c4 = st.columns(2)
+                    bAC = c3.number_input("Interacción A*C", value=0.3, key="sim_bAC")
+                    bBE = c4.number_input("Interacción B*E", value=-0.2, key="sim_bBE")
 
-            st.markdown("**Ruido experimental (Error):**")
-            c5, c6 = st.columns(2)
-            ruido = c5.number_input("Desviación del ruido (σ)", value=0.3, key="sim_noise")
-            y_max = c6.number_input("Límite superior (Y máx)", value=5.0, key="sim_ymax")
-            y_min = 0.0
+                st.markdown("**Ruido experimental (Error):**")
+                c5, c6 = st.columns(2)
+                ruido = c5.number_input("Desviación del ruido (σ)", value=0.3, key="sim_noise")
+                y_max = c6.number_input("Límite superior (Y máx)", value=5.0, key="sim_ymax")
+                y_min = 0.0
 
         # --- BOTÓN PROCESAR ---
         if st.button("Procesar", type='primary'):
@@ -291,7 +304,7 @@ with st.sidebar:
                             rp[f] = rp[f].map({lo: -1, hi: 1})
 
                 # --- APLICAR SIMULACIÓN ---
-                if simular_datos:
+                if simular_datos and not es_ccd:
                     rp['Y_simulado'] = (b0 + 
                                       bA * rp[cols[0]] + 
                                       bB * rp[cols[1]] + 
