@@ -1321,7 +1321,7 @@ elif st.session_state.stage == 'ccd_diag':
         c1f, c2f = st.columns(2)
         f1 = c1f.selectbox("Factor eje X", facc, index=0)
         f2_opts = [f for f in facc if f != f1]
-        f2 = c2f.selectbox("Factor eje Y", f2_opts, index=0)
+        f2 = c2f.selectbox("Factor eje Y", f2_opts, index=len(f2_opts) - 1)
         estilo = st.radio("Estetica del grafico",
                           ["Clasico (estilo articulo)", "Moderno (viridis)"],
                           horizontal=True)
