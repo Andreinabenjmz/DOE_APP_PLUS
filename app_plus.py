@@ -1330,16 +1330,19 @@ elif st.session_state.stage == 'ccd_diag':
             yi = cy.selectbox(f"Eje Y - {r}", yi_opts, index=len(yi_opts) - 1, key=f"yi_{r}")
             ejes_ind[r] = (xi, yi)
 
-        st.markdown("**B. Contorno COMBINADO** (debe usar un solo par de ejes; "
-                    "elija primero que factor queda fijo):")
-        fijo_sel = st.selectbox("Factor FIJO del combinado (no aparece en los ejes)",
-                                facc, index=len(facc) - 1, key="ccd_fijo_sel")
-        ejes = [f for f in facc if f != fijo_sel]
+        st.markdown("**B. Contorno COMBINADO** (elija los DOS factores de los ejes; "
+                    "el/los factor(es) restante(s) queda(n) fijo(s) automaticamente):")
         c1f, c2f = st.columns(2)
-        f1 = c1f.selectbox("Eje X del combinado", ejes, index=0, key="ccd_comb_x")
-        f2_opts = [f for f in ejes if f != f1]
+        f1 = c1f.selectbox("Eje X del combinado", facc, index=0, key="ccd_comb_x")
+        f2_opts = [f for f in facc if f != f1]
         f2 = c2f.selectbox("Eje Y del combinado", f2_opts, index=len(f2_opts) - 1, key="ccd_comb_y")
-        st.caption(f"Combinado: varian X = **{f1}** e Y = **{f2}**; fijo **{fijo_sel}**.")
+        fijo_sel = [f for f in facc if f not in (f1, f2)]
+        if len(fijo_sel) == 1:
+            st.caption(f"Combinado: varian X = **{f1}** e Y = **{f2}**; "
+                       f"queda fijo **{fijo_sel[0]}**.")
+        else:
+            st.caption(f"Combinado: varian X = **{f1}** e Y = **{f2}**; "
+                       f"quedan fijos: {', '.join(fijo_sel)}.")
 
         st.markdown("**C. Valores de los factores cuando estan FIJOS** "
                     "(se usan en los graficos donde ese factor NO esta en los ejes):")
@@ -1413,11 +1416,10 @@ elif st.session_state.stage == 'ccd_diag':
             st.image(figs[f'contorno_{r}'], use_container_width=True)
 
     # ---- Probar un punto ----
-    ejes_comb_ok = (f1 in ejes) and (f2 in [f for f in ejes if f != f1]) and (f1 != f2)
+    ejes_comb_ok = (f1 != f2) and (f2 in [f for f in facc if f != f1])
     if not ejes_comb_ok:
-        st.error(f"Los ejes del combinado (X = {f1}, Y = {f2}) no son validos con "
-                 f"'{fijo_sel}' como factor fijo. Vuelve al formulario, revisa la seccion B "
-                 "y pulsa 'Aplicar configuracion'.")
+        st.error(f"Los ejes del combinado (X = {f1}, Y = {f2}) no son validos. "
+                 "Vuelve al formulario, revisa la seccion B y pulsa 'Aplicar configuracion'.")
 
     # ---- Contorno combinado (se genera DESPUES) ----
     st.markdown("### Contorno combinado (region de interes)")
