@@ -11,6 +11,7 @@ from datetime import date
 from docx import Document
 
 import calc_engine_plus as ce
+import calc_engine_rsm as ce_rsm
 
 from docx.shared import Inches
 
@@ -79,14 +80,9 @@ def _detectar_columnas(raw):
             factores.append(c)
             continue
 
-        if n_unicos == 3:
-            try:
-                vals_num = [float(v) for v in vals]
-                if set(vals_num) == {-1.0, 0.0, 1.0}:
-                    factores.append(c)
-                    continue
-            except (ValueError, TypeError):
-                pass
+        if n_unicos == 3 and pd.api.types.is_numeric_dtype(raw[c]):
+            factores.append(c)   # CCD tambien en unidades reales (0.05/0.5/0.95)
+            continue
 
         if pd.api.types.is_numeric_dtype(raw[c]):
             respuestas.append(c)
@@ -135,6 +131,17 @@ with st.sidebar:
                 file_name='matriz_fraccionada_2_5-1.csv',
                 mime='text/csv',
             )
+    with st.expander("Generar Matriz CCD (Superficie de Respuesta)"):
+        k_ccd = st.selectbox("N° de factores (k)", [2, 3, 4], index=1)
+        alfa_ccd = st.selectbox("Tipo de CCD", ["face", "rot"],
+                                format_func=lambda a: "Cara a cara (α=1)" if a == "face" else "Rotacional")
+        nc_ccd = st.number_input("Puntos centrales", 1, 8, 3)
+        if st.button("Generar Matriz CCD"):
+            df_ccd = ce_rsm.generar_matriz_ccd(k_ccd, alpha=alfa_ccd, n_centros=int(nc_ccd))
+            st.dataframe(df_ccd, use_container_width=True)
+            st.download_button("⬇️ Descargar CCD (CSV)",
+                               df_ccd.to_csv(index=False).encode('utf-8'),
+                               'matriz_ccd.csv', 'text/csv')
     st.markdown("---")
 
     # 2. CARGADOR DE ARCHIVOS
@@ -262,6 +269,14 @@ with st.sidebar:
                     resp = [mapping_resp.get(r, r) for r in resp]
                 rp = raw.copy()
                 rp.insert(0, 'Corrida_ID', range(1, len(rp) + 1))
+
+                # --- RAMA CCD: si el diseno tiene puntos axiales, va a superficie de respuesta ---
+                if cols and resp and ce_rsm.es_diseno_ccd(rp, cols):
+                    st.session_state.df_ccd_raw = rp
+                    st.session_state.factores_ccd = list(cols)
+                    st.session_state.respuesta_ccd = list(resp)
+                    st.session_state.stage = 'ccd_full'
+                    st.rerun()
                 
                 # 2. Aplicar los niveles manuales del estudiante
                 for f in cols:
@@ -1186,4 +1201,214 @@ elif st.session_state.stage == 'report':
     if c1.button("Volver a Diagnostico"): st.session_state.stage = 'diagnostics'; st.rerun()
     if c2.button("Empezar de nuevo"):
         for k in list(st.session_state.keys()): del st.session_state[k]
+        st.rerun()
+
+
+# ==================== RAMA CCD (SUPERFICIE DE RESPUESTA) ====================
+def _tabla_word_ccd(doc, df_t):
+    """Inserta un DataFrame como tabla en Word (sin depender de Pt externo)."""
+    from docx.shared import Pt
+    cols = list(df_t.columns)
+    t = doc.add_table(rows=1, cols=len(cols))
+    t.style = 'Table Grid'
+    for i, cn in enumerate(cols):
+        cell = t.rows[0].cells[i]
+        cell.text = str(cn)
+        for p in cell.paragraphs:
+            for run in p.runs:
+                run.font.bold = True
+                run.font.size = Pt(8)
+    for _, row in df_t.iterrows():
+        cells = t.add_row().cells
+        for i, cn in enumerate(cols):
+            v = row[cn]
+            cells[i].text = '\u2014' if pd.isna(v) else (f"{v:.4f}" if isinstance(v, float) else str(v))
+            for p in cells[i].paragraphs:
+                for run in p.runs:
+                    run.font.size = Pt(8)
+    doc.add_paragraph()
+
+if st.session_state.stage == 'ccd_full':
+    st.title("Superficie de Respuesta (CCD) - Modelo completo")
+    rawc = st.session_state.df_ccd_raw
+    facc = st.session_state.factores_ccd
+    respc = st.session_state.respuesta_ccd
+    st.info(f"Diseno CCD detectado: {len(rawc)} corridas | Factores: {', '.join(facc)}")
+
+    if st.button("Ajustar modelos completos", type='primary'):
+        Rs = {}
+        for r in respc:
+            Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False)
+        st.session_state.R_ccd_full = Rs
+        st.session_state.stage = 'ccd_refine'
+        st.rerun()
+
+    if st.button("Volver a datos"):
+        st.session_state.stage = 'upload'
+        st.rerun()
+
+elif st.session_state.stage == 'ccd_refine':
+    st.title("CCD - Refinar modelo (eliminacion hacia atras)")
+    rawc = st.session_state.df_ccd_raw
+    facc = st.session_state.factores_ccd
+    respc = st.session_state.respuesta_ccd
+    alfa = st.number_input("Alfa para eliminacion (p > alfa se elimina)", 0.01, 0.20, 0.05, 0.01)
+
+    if st.button("Aplicar eliminacion hacia atras", type='primary'):
+        with st.spinner("Ajustando..."):
+            Rs = {}
+            for r in respc:
+                Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, alpha_elim=alfa, eliminar=True)
+            st.session_state.R_ccd = Rs
+
+    Rs = st.session_state.get('R_ccd')
+    if Rs:
+        for r, R in Rs.items():
+            st.markdown(f"### Respuesta: {r}")
+            st.dataframe(R['anova'].round(4), use_container_width=True)
+            c1, c2 = st.columns(2)
+            c1.metric("R2", f"{R['R2']*100:.2f}%")
+            c2.metric("R2 ajustado", f"{R['R2_adj']*100:.2f}%")
+            if R['lof']:
+                ok_lof = R['lof']['p'] > 0.05
+                st.write(f"Falta de ajuste: F = {R['lof']['F']:.3f}, p = {R['lof']['p']:.4f} "
+                         + ("-> no significativa (buena)" if ok_lof else "-> SIGNIFICATIVA (revisar modelo)"))
+            else:
+                st.caption("Sin replicas: no se puede calcular la falta de ajuste (igual que en el articulo).")
+            st.markdown("**Ecuacion (unidades reales):**")
+            st.code(R['eq_uncoded'], language=None)
+
+        c1, c2 = st.columns(2)
+        if c1.button("Volver a modelo completo"):
+            st.session_state.stage = 'ccd_full'
+            st.rerun()
+        if c2.button("Ir a Diagnosticos y graficos", type='primary'):
+            st.session_state.stage = 'ccd_diag'
+            st.rerun()
+
+elif st.session_state.stage == 'ccd_diag':
+    st.title("CCD - Diagnosticos, contornos y optimizacion")
+    Rs = st.session_state.get('R_ccd')
+    if not Rs:
+        st.error("Primero debes refinar el modelo (paso anterior).")
+        st.stop()
+    respc = list(Rs.keys())
+    facc = Rs[respc[0]]['factores']
+    figs = {}
+
+    for r, R in Rs.items():
+        st.markdown(f"### Residuales - {r}")
+        fn = ce_rsm.graf_residuales_ccd(R)
+        figs[f'resid_{r}'] = fn
+        st.image(fn, use_container_width=True)
+
+    st.markdown("### Contornos de respuesta")
+    f1 = st.selectbox("Factor eje X", facc, index=0)
+    f2_opts = [f for f in facc if f != f1]
+    f2 = st.selectbox("Factor eje Y", f2_opts, index=0)
+
+    if st.button("Generar contornos individuales"):
+        for r, R in Rs.items():
+            figs[f'contorno_{r}'] = ce_rsm.graf_contorno_ccd(R, f1, f2)
+            st.image(figs[f'contorno_{r}'], use_container_width=True)
+
+    st.markdown("### Contorno combinado (region de interes, estilo fig. 4)")
+    rawc = st.session_state.df_ccd_raw
+    rangos = {}
+    cc1, cc2 = st.columns(2)
+    for i, r in enumerate(respc):
+        rmin = float(rawc[r].min()); rmax = float(rawc[r].max())
+        with (cc1 if i % 2 == 0 else cc2):
+            lo = st.number_input(f"{r} - minimo aceptable", value=rmin, key=f"lo_{r}")
+            hi = st.number_input(f"{r} - maximo aceptable", value=rmax, key=f"hi_{r}")
+        rangos[r] = (lo, hi)
+
+    usar_punto = st.checkbox("Marcar punto de validacion")
+    punto = None
+    if usar_punto:
+        pcols = st.columns(2)
+        punto = {}
+        for i, f in enumerate([f1, f2]):
+            c_def = Rs[respc[0]]['coding'][f]['c']
+            with pcols[i]:
+                punto[f] = st.number_input(f, value=float(c_def), key=f"pv_{f}")
+
+    if st.button("Generar contorno combinado"):
+        figs['superposicion'] = ce_rsm.graf_superposicion_ccd(
+            list(Rs.values()), rangos, f1, f2, punto=punto)
+        st.image(figs['superposicion'], use_container_width=True)
+
+    st.markdown("### Optimizacion (deseabilidad de Derringer-Suich)")
+    objetivos = {}
+    for r in respc:
+        tipo = st.selectbox(f"Objetivo de {r}", ["max", "min", "target"],
+                            format_func=lambda t: {"max": "Maximizar", "min": "Minimizar",
+                                                   "target": "Apuntar a un target"}[t],
+                            key=f"obj_{r}")
+        o = {'tipo': tipo, 'lo': rangos[r][0], 'hi': rangos[r][1]}
+        if tipo == 'target':
+            o['target'] = st.number_input(f"Target de {r}",
+                                          value=float((rangos[r][0] + rangos[r][1]) / 2),
+                                          key=f"tgt_{r}")
+        objetivos[r] = o
+
+    if st.button("Optimizar"):
+        opt = ce_rsm.optimizar_ccd(list(Rs.values()), objetivos)
+        if opt is None:
+            st.warning("No existe ningun punto que cumpla todas las metas a la vez.")
+        else:
+            pred_txt = " | ".join(f"{k} = {v:.3f}" for k, v in opt['predicciones'].items())
+            st.success(f"Mejor punto (deseabilidad = {opt['deseabilidad']:.3f}): "
+                       f"{opt['punto']}  ->  {pred_txt}")
+
+    st.session_state.figs_ccd = figs
+    c1, c2 = st.columns(2)
+    if c1.button("Volver a Refinar"):
+        st.session_state.stage = 'ccd_refine'
+        st.rerun()
+    if c2.button("Ir a Reporte", type='primary'):
+        st.session_state.stage = 'ccd_report'
+        st.rerun()
+
+elif st.session_state.stage == 'ccd_report':
+    st.title("CCD - Reporte final")
+    Rs = st.session_state.get('R_ccd')
+    figs = st.session_state.get('figs_ccd', {})
+    nombre = st.session_state.get('nombre', 'Analisis CCD')
+
+    if not Rs:
+        st.error("No hay modelo refinado. Vuelve al paso anterior.")
+        st.stop()
+
+    if st.button("Generar informe Word", type='primary'):
+        doc = Document()
+        doc.add_heading(f"Informe de Superficie de Respuesta (CCD) - {nombre}", 0)
+        doc.add_paragraph(f"Fecha: {date.today().strftime('%Y-%m-%d')}")
+        doc.add_paragraph(f"Factores: {', '.join(Rs[list(Rs.keys())[0]]['factores'])}")
+        for r, R in Rs.items():
+            doc.add_heading(f"Respuesta: {r}", level=1)
+            doc.add_paragraph(f"R2 = {R['R2']:.4f} | R2 ajustado = {R['R2_adj']:.4f}")
+            if R['lof']:
+                doc.add_paragraph(f"Falta de ajuste: F = {R['lof']['F']:.3f}, p = {R['lof']['p']:.4f}")
+            doc.add_heading("ANOVA", level=2)
+            _tabla_word_ccd(doc, R['anova'].round(4))
+            doc.add_heading("Ecuacion de regresion (unidades reales)", level=2)
+            doc.add_paragraph(R['eq_uncoded'])
+        doc.add_heading("Graficos", level=1)
+        for key, fn in figs.items():
+            if fn and os.path.exists(fn):
+                doc.add_heading(key.replace('_', ' '), level=2)
+                doc.add_picture(fn, width=Inches(6))
+        buf_word = io.BytesIO()
+        doc.save(buf_word)
+        st.download_button("Descargar informe (Word)", buf_word.getvalue(),
+                           f"{nombre.replace(' ', '_')}_ccd.docx",
+                           "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    c1, c2 = st.columns(2)
+    if c1.button("Volver a Diagnosticos"):
+        st.session_state.stage = 'ccd_diag'
+        st.rerun()
+    if c2.button("Empezar de nuevo"):
+        st.session_state.stage = 'upload'
         st.rerun()
