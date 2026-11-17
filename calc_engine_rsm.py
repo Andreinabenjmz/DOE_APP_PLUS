@@ -295,9 +295,14 @@ def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None,
         niveles = 12
     if estilo == 'clasico':
         cf = ax.contourf(XX, YY, Z, levels=niveles, cmap=(cmap or 'terrain'))
-        cl = ax.contour(XX, YY, Z, levels=8, colors='k', linewidths=0.7)
+        if isinstance(niveles, (list, tuple, np.ndarray)):
+            lv = list(niveles)
+            line_lv = lv[::2] if len(lv) > 7 else lv
+        else:
+            line_lv = 8
+        cl = ax.contour(XX, YY, Z, levels=line_lv, colors='k', linewidths=0.7)
         ax.clabel(cl, fmt='%g', fontsize=8)
-        ax.grid(color='white', alpha=0.6)
+        ax.grid(color='white', alpha=0.3, linewidth=0.6)
     else:
         cf = ax.contourf(XX, YY, Z, levels=niveles, cmap='viridis')
         cl = ax.contour(XX, YY, Z, levels=8, colors='white', linewidths=0.8)

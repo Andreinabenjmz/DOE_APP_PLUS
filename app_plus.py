@@ -1325,11 +1325,16 @@ elif st.session_state.stage == 'ccd_diag':
                       horizontal=True)
     estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
     cmaps = {}
+    niveles_txt = {}
     if estilo_key == 'clasico':
         for r in respc:
             cmaps[r] = st.selectbox(f"Colormap para {r}",
                                     ["terrain", "RdYlGn", "jet", "viridis"],
                                     index=0, key=f"cmap_{r}")
+            niveles_txt[r] = st.text_input(
+                f"Niveles de contorno para {r} (opcional, separados por comas)",
+                value="", key=f"niv_{r}",
+                placeholder="ej: 0,25,50,75,100,125,150,175,200,240")
     etiqueta_x = st.text_input("Etiqueta eje X", value=f1)
     etiqueta_y = st.text_input("Etiqueta eje Y", value=f2)
 
@@ -1346,8 +1351,19 @@ elif st.session_state.stage == 'ccd_diag':
     mostrar_cont = st.checkbox("Mostrar contornos individuales", key='ccd_mostrar_cont')
     if mostrar_cont:
         for r, R in Rs.items():
+            txt = niveles_txt.get(r, '').strip()
+            niv = None
+            if txt:
+                try:
+                    niv = sorted(float(x) for x in txt.replace(';', ',').split(',') if x.strip())
+                    if len(niv) < 2:
+                        niv = None
+                except ValueError:
+                    niv = None
+                    st.warning(f"Niveles de {r} no validos; se usaran niveles automaticos.")
             figs[f'contorno_{r}'] = ce_rsm.graf_contorno_ccd(
                 R, f1, f2, estilo=estilo_key, cmap=cmaps.get(r),
+                niveles=(niv if niv else None),
                 xlabel=etiqueta_x, ylabel=etiqueta_y, punto=punto)
             st.image(figs[f'contorno_{r}'], use_container_width=True)
 
