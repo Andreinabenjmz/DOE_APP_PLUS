@@ -1323,8 +1323,12 @@ elif st.session_state.stage == 'ccd_diag':
     estilo = st.radio("Estetica del grafico",
                       ["Clasico (estilo articulo)", "Moderno (viridis)"],
                       horizontal=True)
-    cmap_sel = st.selectbox("Colormap (solo estilo clasico)",
-                            ["terrain", "RdYlGn", "jet", "viridis"], index=0)
+    cmaps = {}
+    if estilo_key == 'clasico':
+        for r in respc:
+            cmaps[r] = st.selectbox(f"Colormap para {r}",
+                                    ["terrain", "RdYlGn", "jet", "viridis"],
+                                    index=0, key=f"cmap_{r}")
     etiqueta_x = st.text_input("Etiqueta eje X", value=f1)
     etiqueta_y = st.text_input("Etiqueta eje Y", value=f2)
     estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
@@ -1343,7 +1347,7 @@ elif st.session_state.stage == 'ccd_diag':
     if mostrar_cont:
         for r, R in Rs.items():
             figs[f'contorno_{r}'] = ce_rsm.graf_contorno_ccd(
-                R, f1, f2, estilo=estilo_key, cmap=cmap_sel,
+                R, f1, f2, estilo=estilo_key, cmap=cmaps.get(r),
                 xlabel=etiqueta_x, ylabel=etiqueta_y, punto=punto)
             st.image(figs[f'contorno_{r}'], use_container_width=True)
 
