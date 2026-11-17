@@ -275,6 +275,31 @@ def predecir_ccd(R, punto):
 # ------------------------------------------------------------------
 # 8. GRAFICOS
 # ------------------------------------------------------------------
+def _zgrid(R, f1, f2, XX, YY):
+    """Evaluacion VECTORIZADA (numpy) del modelo sobre una malla 2D;
+    los demas factores se fijan en su centro. Miles de veces mas rapido
+    que predecir punto por punto."""
+    cod = R['coding']
+    fs = R['factores']
+    xc = {}
+    for f in fs:
+        if f == f1:
+            xc[f] = (XX - cod[f]['c']) / cod[f]['half']
+        elif f == f2:
+            xc[f] = (YY - cod[f]['c']) / cod[f]['half']
+        else:
+            xc[f] = np.zeros_like(XX)
+    Z = np.full_like(XX, float(R['model'].params['Intercept']))
+    p = R['model'].params
+    for t in R['terms']:
+        b = float(p[_param(t, fs)])
+        prod = np.ones_like(XX)
+        for pp in t.split('*'):
+            prod = prod * xc[pp]
+        Z = Z + b * prod
+    return Z
+
+
 def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None,
                       estilo='moderno', cmap=None, xlabel=None, ylabel=None, punto=None):
     """Contorno 2D de una respuesta sobre el plano (f1, f2), otros factores al centro."""
@@ -285,12 +310,7 @@ def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None,
     x = np.linspace(c1['lo'], c1['hi'], 200)
     y = np.linspace(c2['lo'], c2['hi'], 200)
     XX, YY = np.meshgrid(x, y)
-    base = {f: R['coding'][f]['c'] for f in R['factores']}
-    Z = np.zeros_like(XX)
-    for i in range(XX.shape[0]):
-        for j in range(XX.shape[1]):
-            p = dict(base); p[f1] = XX[i, j]; p[f2] = YY[i, j]
-            Z[i, j] = predecir_ccd(R, p)
+    Z = _zgrid(R, f1, f2, XX, YY)
     if niveles is None:
         niveles = 12
     if estilo == 'clasico':
@@ -334,11 +354,7 @@ def graf_superposicion_ccd(Rs, rangos, f1, f2, punto=None, ax=None, xlabel=None,
     ok = np.ones_like(XX, dtype=bool)
     cols = ['#1f5fb4', '#b41f1f', '#1f9b4f', '#8a2be2']
     for idx, R in enumerate(Rs):
-        Z = np.zeros_like(XX)
-        for i in range(XX.shape[0]):
-            for j in range(XX.shape[1]):
-                p = dict(base); p[f1] = XX[i, j]; p[f2] = YY[i, j]
-                Z[i, j] = predecir_ccd(R, p)
+        Z = _zgrid(R, f1, f2, XX, YY)
         lo, hi = rangos[R['respuesta']]
         ok &= (Z >= lo) & (Z <= hi)
         ax.contour(XX, YY, Z, levels=[lo, hi], colors=[cols[idx % 4]]*2,
@@ -382,33 +398,43 @@ def optimizar_ccd(Rs, objetivos, n=21):
     Devuelve mejor punto (reales), predicciones y deseabilidad global."""
     cod = Rs[0]['coding']
     factores = Rs[0]['factores']
+    fidx = {f: i for i, f in enumerate(factores)}
     grids = [np.linspace(cod[f]['lo'], cod[f]['hi'], n) for f in factores]
-    mejor, mejor_d = None, -1
-    # barrido en malla (k<=5 manejable)
-    import itertools
-    for combo in itertools.product(*grids):
-        p = dict(zip(factores, combo))
-        d_glob, valido = 1.0, True
-        for R in Rs:
-            o = objetivos[R['respuesta']]
-            yv = predecir_ccd(R, p)
-            lo, hi = o['lo'], o['hi']
-            if yv < lo or yv > hi:
-                valido = False; break
-            if o['tipo'] == 'max':
-                d = (yv - lo) / (hi - lo)
-            elif o['tipo'] == 'min':
-                d = (hi - yv) / (hi - lo)
-            else:
-                t = o['target']
-                d = (yv - lo)/(t - lo) if yv <= t else (hi - yv)/(hi - t)
-            d_glob *= max(min(d, 1.0), 0.0)
-        if valido and d_glob > mejor_d:
-            mejor_d, mejor = d_glob, p
-    if mejor is None:
+    mesh = np.meshgrid(*grids, indexing='ij')
+    P = np.stack([m.ravel() for m in mesh], axis=1)     # (n^k, k) — vectorizado
+    C = np.array([cod[f]['c'] for f in factores])
+    H = np.array([cod[f]['half'] for f in factores])
+    Xc = (P - C) / H
+    npts = P.shape[0]
+    d_glob = np.ones(npts)
+    valido = np.ones(npts, dtype=bool)
+    for R in Rs:
+        o = objetivos[R['respuesta']]
+        yv = np.full(npts, float(R['model'].params['Intercept']))
+        p = R['model'].params
+        for t in R['terms']:
+            b = float(p[_param(t, factores)])
+            prod = np.ones(npts)
+            for pp in t.split('*'):
+                prod = prod * Xc[:, fidx[pp]]
+            yv = yv + b * prod
+        lo, hi = o['lo'], o['hi']
+        valido &= (yv >= lo) & (yv <= hi)
+        if o['tipo'] == 'max':
+            d = (yv - lo) / (hi - lo)
+        elif o['tipo'] == 'min':
+            d = (hi - yv) / (hi - lo)
+        else:
+            t0 = o['target']
+            d = np.where(yv <= t0, (yv - lo) / (t0 - lo), (hi - yv) / (hi - t0))
+        d_glob *= np.clip(d, 0.0, 1.0)
+    d_glob[~valido] = -1.0
+    i = int(np.argmax(d_glob))
+    if d_glob[i] < 0:
         return None
+    mejor = {f: float(P[i, j]) for j, f in enumerate(factores)}
     preds = {R['respuesta']: predecir_ccd(R, mejor) for R in Rs}
-    return {'punto': mejor, 'predicciones': preds, 'deseabilidad': mejor_d}
+    return {'punto': mejor, 'predicciones': preds, 'deseabilidad': float(d_glob[i])}
 
 # ------------------------------------------------------------------
 # 10. DETECCION DE CCD (para el parche de app_plus.py)

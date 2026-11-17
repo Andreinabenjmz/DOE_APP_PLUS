@@ -1316,17 +1316,27 @@ elif st.session_state.stage == 'ccd_diag':
         st.image(fn, use_container_width=True)
 
     st.markdown("### Contornos de respuesta")
-    f1 = st.selectbox("Factor eje X", facc, index=0)
-    f2_opts = [f for f in facc if f != f1]
-    f2 = st.selectbox("Factor eje Y", f2_opts, index=0)
-
-    estilo = st.radio("Estetica del grafico",
-                      ["Clasico (estilo articulo)", "Moderno (viridis)"],
-                      horizontal=True)
-    estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
-    cmaps = {}
-    niveles_txt = {}
-    if estilo_key == 'clasico':
+    st.caption("Configura todo y pulsa **Aplicar configuracion**; nada se recalcula mientras editas.")
+    with st.form("ccd_form_cfg"):
+        c1f, c2f = st.columns(2)
+        f1 = c1f.selectbox("Factor eje X", facc, index=0)
+        f2_opts = [f for f in facc if f != f1]
+        f2 = c2f.selectbox("Factor eje Y", f2_opts, index=0)
+        estilo = st.radio("Estetica del grafico",
+                          ["Clasico (estilo articulo)", "Moderno (viridis)"],
+                          horizontal=True)
+        etiqueta_x = st.text_input("Etiqueta eje X", value=f1)
+        etiqueta_y = st.text_input("Etiqueta eje Y", value=f2)
+        usar_punto = st.checkbox("Marcar punto de validacion")
+        punto = None
+        if usar_punto:
+            pcols = st.columns(2)
+            punto = {}
+            for i, f in enumerate([f1, f2]):
+                c_def = Rs[respc[0]]['coding'][f]['c']
+                with pcols[i]:
+                    punto[f] = st.number_input(f, value=float(c_def), key=f"pv_{f}")
+        cmaps, niveles_txt = {}, {}
         for r in respc:
             cmaps[r] = st.selectbox(f"Colormap para {r}",
                                     ["terrain", "RdYlGn", "jet", "viridis"],
@@ -1335,18 +1345,9 @@ elif st.session_state.stage == 'ccd_diag':
                 f"Niveles de contorno para {r} (opcional, separados por comas)",
                 value="", key=f"niv_{r}",
                 placeholder="ej: 0,25,50,75,100,125,150,175,200,240")
-    etiqueta_x = st.text_input("Etiqueta eje X", value=f1)
-    etiqueta_y = st.text_input("Etiqueta eje Y", value=f2)
+        st.form_submit_button("Aplicar configuracion", type='primary')
 
-    usar_punto = st.checkbox("Marcar punto de validacion")
-    punto = None
-    if usar_punto:
-        pcols = st.columns(2)
-        punto = {}
-        for i, f in enumerate([f1, f2]):
-            c_def = Rs[respc[0]]['coding'][f]['c']
-            with pcols[i]:
-                punto[f] = st.number_input(f, value=float(c_def), key=f"pv_{f}")
+    estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
 
     mostrar_cont = st.checkbox("Mostrar contornos individuales", key='ccd_mostrar_cont')
     if mostrar_cont:
@@ -1368,15 +1369,31 @@ elif st.session_state.stage == 'ccd_diag':
             st.image(figs[f'contorno_{r}'], use_container_width=True)
 
     st.markdown("### Contorno combinado (region de interes, estilo fig. 4)")
+    st.caption("Ajusta las metas y objetivos, pulsa **Aplicar metas** y luego activa la casilla de mostrar.")
     rawc = st.session_state.df_ccd_raw
-    rangos = {}
-    cc1, cc2 = st.columns(2)
-    for i, r in enumerate(respc):
-        rmin = float(rawc[r].min()); rmax = float(rawc[r].max())
-        with (cc1 if i % 2 == 0 else cc2):
-            lo = st.number_input(f"{r} - minimo aceptable", value=rmin, key=f"lo_{r}")
-            hi = st.number_input(f"{r} - maximo aceptable", value=rmax, key=f"hi_{r}")
-        rangos[r] = (lo, hi)
+    with st.form("ccd_form_metas"):
+        rangos = {}
+        cc1, cc2 = st.columns(2)
+        for i, r in enumerate(respc):
+            rmin = float(rawc[r].min()); rmax = float(rawc[r].max())
+            with (cc1 if i % 2 == 0 else cc2):
+                lo = st.number_input(f"{r} - minimo aceptable", value=rmin, key=f"lo_{r}")
+                hi = st.number_input(f"{r} - maximo aceptable", value=rmax, key=f"hi_{r}")
+            rangos[r] = (lo, hi)
+        st.markdown("**Objetivos de optimizacion (deseabilidad de Derringer-Suich):**")
+        objetivos = {}
+        for r in respc:
+            tipo = st.selectbox(f"Objetivo de {r}", ["max", "min", "target"],
+                                format_func=lambda t: {"max": "Maximizar", "min": "Minimizar",
+                                                       "target": "Apuntar a un target"}[t],
+                                key=f"obj_{r}")
+            o = {'tipo': tipo, 'lo': rangos[r][0], 'hi': rangos[r][1]}
+            if tipo == 'target':
+                o['target'] = st.number_input(f"Target de {r}",
+                                              value=float((rangos[r][0] + rangos[r][1]) / 2),
+                                              key=f"tgt_{r}")
+            objetivos[r] = o
+        st.form_submit_button("Aplicar metas", type='primary')
 
     mostrar_comb = st.checkbox("Mostrar contorno combinado", key='ccd_mostrar_comb')
     if mostrar_comb:
@@ -1386,20 +1403,7 @@ elif st.session_state.stage == 'ccd_diag':
         st.image(figs['superposicion'], use_container_width=True)
 
     st.markdown("### Optimizacion (deseabilidad de Derringer-Suich)")
-    objetivos = {}
-    for r in respc:
-        tipo = st.selectbox(f"Objetivo de {r}", ["max", "min", "target"],
-                            format_func=lambda t: {"max": "Maximizar", "min": "Minimizar",
-                                                   "target": "Apuntar a un target"}[t],
-                            key=f"obj_{r}")
-        o = {'tipo': tipo, 'lo': rangos[r][0], 'hi': rangos[r][1]}
-        if tipo == 'target':
-            o['target'] = st.number_input(f"Target de {r}",
-                                          value=float((rangos[r][0] + rangos[r][1]) / 2),
-                                          key=f"tgt_{r}")
-        objetivos[r] = o
-
-    if st.button("Optimizar"):
+    if st.button("Optimizar ahora"):
         opt = ce_rsm.optimizar_ccd(list(Rs.values()), objetivos)
         st.session_state.opt_ccd = opt if opt is not None else 'SIN_SOLUCION'
     opt = st.session_state.get('opt_ccd')
@@ -1409,6 +1413,7 @@ elif st.session_state.stage == 'ccd_diag':
         pred_txt = " | ".join(f"{k} = {v:.3f}" for k, v in opt['predicciones'].items())
         st.success(f"Mejor punto (deseabilidad = {opt['deseabilidad']:.3f}): "
                    f"{opt['punto']}  ->  {pred_txt}")
+
     st.session_state.figs_ccd = figs
     c1, c2 = st.columns(2)
     if c1.button("Volver a Refinar"):
