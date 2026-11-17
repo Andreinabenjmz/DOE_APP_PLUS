@@ -275,7 +275,8 @@ def predecir_ccd(R, punto):
 # ------------------------------------------------------------------
 # 8. GRAFICOS
 # ------------------------------------------------------------------
-def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None):
+def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None,
+                      estilo='moderno', cmap=None, xlabel=None, ylabel=None, punto=None):
     """Contorno 2D de una respuesta sobre el plano (f1, f2), otros factores al centro."""
     created = ax is None
     if created:
@@ -292,10 +293,19 @@ def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None):
             Z[i, j] = predecir_ccd(R, p)
     if niveles is None:
         niveles = 12
-    cf = ax.contourf(XX, YY, Z, levels=niveles, cmap='viridis')
-    cl = ax.contour(XX, YY, Z, levels=8, colors='white', linewidths=0.8)
-    ax.clabel(cl, fmt='%.2g', fontsize=8)
-    ax.set_xlabel(f1); ax.set_ylabel(f2)
+    if estilo == 'clasico':
+        cf = ax.contourf(XX, YY, Z, levels=niveles, cmap=(cmap or 'terrain'))
+        cl = ax.contour(XX, YY, Z, levels=8, colors='k', linewidths=0.7)
+        ax.clabel(cl, fmt='%g', fontsize=8)
+        ax.grid(color='white', alpha=0.6)
+    else:
+        cf = ax.contourf(XX, YY, Z, levels=niveles, cmap='viridis')
+        cl = ax.contour(XX, YY, Z, levels=8, colors='white', linewidths=0.8)
+        ax.clabel(cl, fmt='%.2g', fontsize=8)
+    if punto:
+        ax.plot(punto[f1], punto[f2], 'r*', ms=14, mec='k')
+    ax.set_xlabel(xlabel or f1)
+    ax.set_ylabel(ylabel or f2)
     ax.set_title(titulo or f"Contorno: {R['respuesta']}")
     plt.colorbar(cf, ax=ax, label=R['respuesta'])
     if created:
@@ -303,7 +313,7 @@ def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None):
         plt.savefig(fn, bbox_inches='tight'); plt.close()
         return fn
 
-def graf_superposicion_ccd(Rs, rangos, f1, f2, punto=None, ax=None):
+def graf_superposicion_ccd(Rs, rangos, f1, f2, punto=None, ax=None, xlabel=None, ylabel=None):
     """Rs: lista de dicts R (uno por respuesta). rangos: {nombre_resp: (lo, hi)}.
     Dibuja region blanca donde TODAS las respuestas estan en rango (estilo fig. 4 del articulo)."""
     created = False
@@ -335,7 +345,8 @@ def graf_superposicion_ccd(Rs, rangos, f1, f2, punto=None, ax=None):
         ax.plot(punto[f1], punto[f2], 'g*', ms=18, mec='k')
         ax.annotate('validación', (punto[f1], punto[f2]),
                     textcoords='offset points', xytext=(8, 8), color='darkgreen')
-    ax.set_xlabel(f1); ax.set_ylabel(f2)
+    ax.set_xlabel(xlabel or f1)
+    ax.set_ylabel(ylabel or f2)
     ax.set_title('Contorno combinado (región blanca = todas las metas)')
     ax.legend(loc='upper right', fontsize=9)
     if created:

@@ -1320,9 +1320,31 @@ elif st.session_state.stage == 'ccd_diag':
     f2_opts = [f for f in facc if f != f1]
     f2 = st.selectbox("Factor eje Y", f2_opts, index=0)
 
-    if st.button("Generar contornos individuales"):
+    estilo = st.radio("Estetica del grafico",
+                      ["Clasico (estilo articulo)", "Moderno (viridis)"],
+                      horizontal=True)
+    cmap_sel = st.selectbox("Colormap (solo estilo clasico)",
+                            ["terrain", "RdYlGn", "jet", "viridis"], index=0)
+    etiqueta_x = st.text_input("Etiqueta eje X", value=f1)
+    etiqueta_y = st.text_input("Etiqueta eje Y", value=f2)
+    estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
+
+    usar_punto = st.checkbox("Marcar punto de validacion")
+    punto = None
+    if usar_punto:
+        pcols = st.columns(2)
+        punto = {}
+        for i, f in enumerate([f1, f2]):
+            c_def = Rs[respc[0]]['coding'][f]['c']
+            with pcols[i]:
+                punto[f] = st.number_input(f, value=float(c_def), key=f"pv_{f}")
+
+    mostrar_cont = st.checkbox("Mostrar contornos individuales", key='ccd_mostrar_cont')
+    if mostrar_cont:
         for r, R in Rs.items():
-            figs[f'contorno_{r}'] = ce_rsm.graf_contorno_ccd(R, f1, f2)
+            figs[f'contorno_{r}'] = ce_rsm.graf_contorno_ccd(
+                R, f1, f2, estilo=estilo_key, cmap=cmap_sel,
+                xlabel=etiqueta_x, ylabel=etiqueta_y, punto=punto)
             st.image(figs[f'contorno_{r}'], use_container_width=True)
 
     st.markdown("### Contorno combinado (region de interes, estilo fig. 4)")
@@ -1336,19 +1358,11 @@ elif st.session_state.stage == 'ccd_diag':
             hi = st.number_input(f"{r} - maximo aceptable", value=rmax, key=f"hi_{r}")
         rangos[r] = (lo, hi)
 
-    usar_punto = st.checkbox("Marcar punto de validacion")
-    punto = None
-    if usar_punto:
-        pcols = st.columns(2)
-        punto = {}
-        for i, f in enumerate([f1, f2]):
-            c_def = Rs[respc[0]]['coding'][f]['c']
-            with pcols[i]:
-                punto[f] = st.number_input(f, value=float(c_def), key=f"pv_{f}")
-
-    if st.button("Generar contorno combinado"):
+    mostrar_comb = st.checkbox("Mostrar contorno combinado", key='ccd_mostrar_comb')
+    if mostrar_comb:
         figs['superposicion'] = ce_rsm.graf_superposicion_ccd(
-            list(Rs.values()), rangos, f1, f2, punto=punto)
+            list(Rs.values()), rangos, f1, f2, punto=punto,
+            xlabel=etiqueta_x, ylabel=etiqueta_y)
         st.image(figs['superposicion'], use_container_width=True)
 
     st.markdown("### Optimizacion (deseabilidad de Derringer-Suich)")
@@ -1367,13 +1381,14 @@ elif st.session_state.stage == 'ccd_diag':
 
     if st.button("Optimizar"):
         opt = ce_rsm.optimizar_ccd(list(Rs.values()), objetivos)
-        if opt is None:
-            st.warning("No existe ningun punto que cumpla todas las metas a la vez.")
-        else:
-            pred_txt = " | ".join(f"{k} = {v:.3f}" for k, v in opt['predicciones'].items())
-            st.success(f"Mejor punto (deseabilidad = {opt['deseabilidad']:.3f}): "
-                       f"{opt['punto']}  ->  {pred_txt}")
-
+        st.session_state.opt_ccd = opt if opt is not None else 'SIN_SOLUCION'
+    opt = st.session_state.get('opt_ccd')
+    if opt == 'SIN_SOLUCION':
+        st.warning("No existe ningun punto que cumpla todas las metas a la vez.")
+    elif opt:
+        pred_txt = " | ".join(f"{k} = {v:.3f}" for k, v in opt['predicciones'].items())
+        st.success(f"Mejor punto (deseabilidad = {opt['deseabilidad']:.3f}): "
+                   f"{opt['punto']}  ->  {pred_txt}")
     st.session_state.figs_ccd = figs
     c1, c2 = st.columns(2)
     if c1.button("Volver a Refinar"):
