@@ -975,18 +975,47 @@ elif st.session_state.stage == 'results':
                 st.image(fn)
             except Exception as e:
                 st.warning(f"No se pudieron generar efectos principales: {e}")
+                
 
         with tab4:
             try:
-                fig_list = ce._gen_interactions(R, mapeos=st.session_state.mapeos_inversos, unidades=unidades)
-                for fn in fig_list:
-                    st.image(fn)
+                ints_modelo = [n for n in R['effects'] if len(n.split('*')) == 2]
+                eje_x_sel = {}
+
+                if ints_modelo:
+                    st.markdown("**Elige qué factor quieres mostrar en el eje X de cada gráfica:**")
+                    cols_ejex = st.columns(min(len(ints_modelo), 3))
+                    for idx_int, inter in enumerate(ints_modelo):
+                        fa, fb = inter.split('*')
+                        eje_x_sel[inter] = cols_ejex[idx_int % len(cols_ejex)].radio(
+                            f"Eje X para `{inter}`:",
+                            options=[fa, fb],
+                            index=0,
+                            horizontal=True,
+                            key=f"ejex_{inter}"
+                        )
+
+                niv_g = st.session_state.get('niveles_guardados', {})
+                unidades_int = {f: niv_g.get(f, {}).get('unidad', '') for f in factores}
+
+                fig_list = ce._gen_interactions(
+                    R,
+                    mapeos=st.session_state.mapeos_inversos,
+                    unidades=unidades_int,
+                    eje_x_por_interaccion=eje_x_sel
+                )
+                if not fig_list:
+                    st.info("El modelo actual no tiene interacciones de 2 factores.")
+                else:
+                    for fn in fig_list:
+                        st.image(fn)
                 _info_box("Graficos de interaccion",
                           "Muestran como el efecto de un factor cambia segun el nivel del otro. "
                           "Lineas paralelas = sin interaccion. Lineas que se cruzan = interaccion significativa.",
                           tipo='tip')
             except Exception as e:
                 st.warning(f"No se pudieron generar interacciones: {e}")
+                
 
         # PREDICCION
         st.markdown("---")
