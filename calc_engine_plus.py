@@ -1390,7 +1390,8 @@ def generar_tabla_alias(df, factores):
     return pd.DataFrame(filas)
 
 
-def _gen_superficie_3d(R, resp_name='Respuesta (Y)', nombres_reales=None):
+def _gen_superficie_3d(R, resp_name='Respuesta (Y)', nombres_reales=None,
+                       f1=None, f2=None, mapeos=None, unidades=None):
     if R['via'] == VIA_3:
         return None, None, None, None
 
@@ -1398,40 +1399,63 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)', nombres_reales=None):
     if len(factores) < 2:
         return None, None, None, None
 
-    f1_raw = factores[0]
-    f2_raw = factores[2] if len(factores) > 2 else factores[1]
+    f1_raw = f1 if (f1 in factores) else factores[0]
+    f2_raw = f2 if (f2 in factores and f2 != f1_raw) else (
+        factores[2] if (len(factores) > 2 and factores[2] != f1_raw)
+        else next(x for x in factores if x != f1_raw)
+    )
 
-    if nombres_reales:
-        f1_label = nombres_reales.get(f1_raw, f1_raw)
-        f2_label = nombres_reales.get(f2_raw, f2_raw)
-    else:
-        f1_label = f1_raw
-        f2_label = f2_raw
+    u1 = (unidades or {}).get(f1_raw, '').strip()
+    u2 = (unidades or {}).get(f2_raw, '').strip()
+    f1_base = nombres_reales.get(f1_raw, f1_raw) if nombres_reales else f1_raw
+    f2_base = nombres_reales.get(f2_raw, f2_raw) if nombres_reales else f2_raw
+    f1_label = f"{f1_base} ({u1})" if u1 else f"{f1_base} (coded)"
+    f2_label = f"{f2_base} ({u2})" if u2 else f"{f2_base} (coded)"
 
     x = np.linspace(-1, 1, 50)
     y = np.linspace(-1, 1, 50)
-    X, Y = np.meshgrid(x, y)
+    Xc, Yc = np.meshgrid(x, y)
 
-    Z = np.full_like(X, R.get('intercepto_ols', R['y_bar']))
+    Z = np.full_like(Xc, R.get('intercepto_ols', R['y_bar']))
     if f1_raw in R['effects']:
-        Z += R['effects'][f1_raw]['coef'] * X
+        Z += R['effects'][f1_raw]['coef'] * Xc
     if f2_raw in R['effects']:
-        Z += R['effects'][f2_raw]['coef'] * Y
+        Z += R['effects'][f2_raw]['coef'] * Yc
     if R.get('p_curv', 1) < 0.05:
         coef_curv = R['yf_bar'] - R['yc_bar']
-        Z += coef_curv * (X ** 2)
+        Z += coef_curv * (Xc ** 2)
 
-    term_int = f"{f1_raw}*{f2_raw}"
-    if term_int in R['effects']:
-        Z += R['effects'][term_int]['coef'] * X * Y
+    for term_int in (f"{f1_raw}*{f2_raw}", f"{f2_raw}*{f1_raw}"):
+        if term_int in R['effects']:
+            Z += R['effects'][term_int]['coef'] * Xc * Yc
+            break
+
+    if mapeos and f1_raw in mapeos and -1 in mapeos[f1_raw] and 1 in mapeos[f1_raw]:
+        v1_lo, v1_hi = float(mapeos[f1_raw][-1]), float(mapeos[f1_raw][1])
+        X = (v1_lo + v1_hi) / 2.0 + Xc * (v1_hi - v1_lo) / 2.0
+        if not u1:
+            f1_label = f1_base
+    else:
+        X = Xc
+
+    if mapeos and f2_raw in mapeos and -1 in mapeos[f2_raw] and 1 in mapeos[f2_raw]:
+        v2_lo, v2_hi = float(mapeos[f2_raw][-1]), float(mapeos[f2_raw][1])
+        Y = (v2_lo + v2_hi) / 2.0 + Yc * (v2_hi - v2_lo) / 2.0
+        if not u2:
+            f2_label = f2_base
+    else:
+        Y = Yc
 
     idx_max = np.unravel_index(np.argmax(Z), Z.shape)
     x_opt = X[idx_max]
     y_opt = Y[idx_max]
     z_opt = Z[idx_max]
 
-    z_min = np.min(Z)
-    z_max = np.max(Z)
+    z_min = float(np.min(Z))
+    z_max = float(np.max(Z))
+    if z_max - z_min < 1e-9:
+        z_min -= 0.1
+        z_max += 0.1
     margen = (z_max - z_min) * 0.1
     limite_inf = z_min - margen
     limite_sup = z_max + margen
@@ -1442,10 +1466,10 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)', nombres_reales=None):
     ax1.scatter(x_opt, y_opt, z_opt, color='red', marker='*', s=300, zorder=10, label='Óptimo Predicho')
     ax1.text(x_opt, y_opt, z_opt + margen, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
     ax1.legend()
-    ax1.set_xlabel(f"{f1_label} (coded)", labelpad=10)
-    ax1.set_ylabel(f"{f2_label} (coded)", labelpad=10)
+    ax1.set_xlabel(f1_label, labelpad=10)
+    ax1.set_ylabel(f2_label, labelpad=10)
     ax1.set_zlabel(resp_name, labelpad=15, rotation=90)
-    ax1.set_title(f'Superficie: {f1_label} vs {f2_label}')
+    ax1.set_title(f'Superficie 3D: {f1_base} vs {f2_base}')
     ax1.set_zlim(limite_inf, limite_sup)
     cbar1 = fig.colorbar(surf, ax=ax1, shrink=0.5, aspect=5, extend='both')
     cbar1.set_label(resp_name, rotation=270, labelpad=25)
@@ -1464,31 +1488,50 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)', nombres_reales=None):
         t.set_path_effects([path_effects.withStroke(linewidth=2, foreground='black')])
 
     ax2.scatter(x_opt, y_opt, color='red', marker='*', s=200, zorder=10, label='Óptimo Predicho')
-    ax2.text(x_opt, y_opt + 0.1, f'{z_opt:.2f}', color='red', fontweight='bold', ha='center')
     ax2.legend(loc='upper right')
-    ax2.set_xlabel(f"{f1_label} (coded)")
-    ax2.set_ylabel(f"{f2_label} (coded)")
-    ax2.set_title(f'Curvas de Nivel: {f1_label} vs {f2_label}')
+    ax2.set_xlabel(f1_label)
+    ax2.set_ylabel(f2_label)
+    ax2.set_title(f'Curvas de Nivel: {f1_base} vs {f2_base}')
     cbar2 = fig.colorbar(contour_f, ax=ax2, extend='both')
     cbar2.set_label(resp_name, rotation=270, labelpad=25)
 
     plt.tight_layout()
-    fn = 'superficie_3d.png'
+    fn = f'superficie_3d_{f1_raw}_{f2_raw}.png'
     plt.savefig(fn, bbox_inches='tight')
     plt.close()
     return fn, x_opt, y_opt, z_opt
 
 
-def _gen_superficie_interpolada(df, R, f1='A', f2='C', resp_name='Respuesta (Y)'):
+def _gen_superficie_interpolada(df, R, f1='A', f2='C', resp_name='Respuesta (Y)',
+                                mapeos=None, unidades=None):
     if R['via'] == VIA_3:
         return None
 
-    x_data = df[f1].values
-    y_data = df[f2].values
-    z_data = df['Y'].values
+    x_cod = df[f1].values.astype(float)
+    y_cod = df[f2].values.astype(float)
+    z_data = df['Y'].values.astype(float)
 
-    xi = np.linspace(-1, 1, 100)
-    yi = np.linspace(-1, 1, 100)
+    u1 = (unidades or {}).get(f1, '').strip()
+    u2 = (unidades or {}).get(f2, '').strip()
+
+    if mapeos and f1 in mapeos and -1 in mapeos[f1] and 1 in mapeos[f1]:
+        v1_lo, v1_hi = float(mapeos[f1][-1]), float(mapeos[f1][1])
+        x_data = (v1_lo + v1_hi) / 2.0 + x_cod * (v1_hi - v1_lo) / 2.0
+        lbl1 = f"{f1} ({u1})" if u1 else f1
+    else:
+        x_data = x_cod
+        lbl1 = f"{f1} ({u1})" if u1 else f"{f1} (coded)"
+
+    if mapeos and f2 in mapeos and -1 in mapeos[f2] and 1 in mapeos[f2]:
+        v2_lo, v2_hi = float(mapeos[f2][-1]), float(mapeos[f2][1])
+        y_data = (v2_lo + v2_hi) / 2.0 + y_cod * (v2_hi - v2_lo) / 2.0
+        lbl2 = f"{f2} ({u2})" if u2 else f2
+    else:
+        y_data = y_cod
+        lbl2 = f"{f2} ({u2})" if u2 else f"{f2} (coded)"
+
+    xi = np.linspace(x_data.min(), x_data.max(), 100)
+    yi = np.linspace(y_data.min(), y_data.max(), 100)
     Xi, Yi = np.meshgrid(xi, yi)
 
     try:
@@ -1500,8 +1543,8 @@ def _gen_superficie_interpolada(df, R, f1='A', f2='C', resp_name='Respuesta (Y)'
     ax1 = fig.add_subplot(121, projection='3d')
     surf = ax1.plot_surface(Xi, Yi, Zi, cmap='viridis', edgecolor='none', alpha=0.9)
     ax1.scatter(x_data, y_data, z_data, color='red', s=50, zorder=10, label='Datos Reales')
-    ax1.set_xlabel(f"{f1} (coded)")
-    ax1.set_ylabel(f"{f2} (coded)")
+    ax1.set_xlabel(lbl1)
+    ax1.set_ylabel(lbl2)
     ax1.set_zlabel(resp_name)
     ax1.set_title(f'Superficie Interpolada (Datos Reales): {f1} vs {f2}')
     ax1.legend()
@@ -1510,13 +1553,13 @@ def _gen_superficie_interpolada(df, R, f1='A', f2='C', resp_name='Respuesta (Y)'
     ax2 = fig.add_subplot(122)
     contour = ax2.contourf(Xi, Yi, Zi, 20, cmap='viridis')
     ax2.scatter(x_data, y_data, color='red', s=20, edgecolor='white', zorder=10)
-    ax2.set_xlabel(f"{f1} (coded)")
-    ax2.set_ylabel(f"{f2} (coded)")
+    ax2.set_xlabel(lbl1)
+    ax2.set_ylabel(lbl2)
     ax2.set_title(f'Contorno Interpolado (Datos Reales): {f1} vs {f2}')
     fig.colorbar(contour, ax=ax2)
 
     plt.tight_layout()
-    fn = 'superficie_interpolada.png'
+    fn = f'superficie_interpolada_{f1}_{f2}.png'
     plt.savefig(fn, bbox_inches='tight')
     plt.close()
     return fn
