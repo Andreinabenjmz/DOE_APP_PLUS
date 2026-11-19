@@ -110,9 +110,17 @@ def _detectar_centros(raw, cols):
 
 
 def _detectar_replicas(raw, cols, resp_col):
+    """Cuenta replicas PURAS del diseno completo (excluye puntos centrales)."""
     if resp_col is None or resp_col not in raw.columns:
         return 0
-    df_group = raw.groupby(cols)[resp_col].count()
+    # Excluir puntos centrales (todos los factores = 0)
+    df_esq = raw.copy()
+    for c in cols:
+        df_esq[c] = pd.to_numeric(df_esq[c], errors='coerce')
+    df_esq = df_esq[~df_esq[cols].eq(0).all(axis=1)]
+    if len(df_esq) == 0:
+        return 0
+    df_group = df_esq.groupby(cols)[resp_col].count()
     return int((df_group > 1).sum())
 
 
@@ -169,9 +177,38 @@ def _sugerir_analisis(raw, factores, respuesta):
     if centros > 0:
         return 'factorial_via2', f"Detectado: {esquinas} esquinas + {centros} centros. Sugerencia: Via 2."
     elif replicas > 0:
-        return 'factorial_via1', f"Detectado: {esquinas} esquinas con {replicas} replicas. Sugerencia: Via 1."
+        return 'factorial_via1', f"Detectado: {esquinas} esquinas con {replicas} grupos de replicas. Sugerencia: Via 1."
     else:
         return 'factorial_via3', f"Detectado: {esquinas} esquinas sin replicas ni centros. Sugerencia: Via 3."
+
+
+def _agregar_centros(raw, factores, respuesta, n_centros=3):
+    """Genera n puntos centrales y los añade a la matriz."""
+    df = raw.copy()
+    # Calcular valor medio de cada factor
+    centros_data = {}
+    for f in factores:
+        vals = pd.to_numeric(df[f], errors='coerce').dropna()
+        # Excluir los 0 actuales (si los hay) para calcular el rango real
+        vals_no_cero = vals[vals != 0]
+        if len(vals_no_cero) > 0:
+            v_min = vals_no_cero.min()
+            v_max = vals_no_cero.max()
+            v_medio = (v_min + v_max) / 2
+        else:
+            v_medio = vals.mean()
+        centros_data[f] = v_medio
+
+    # Crear filas de centros
+    nuevas_filas = []
+    for i in range(n_centros):
+        fila = {f: centros_data[f] for f in factores}
+        fila[respuesta] = np.nan  # Valor desconocido
+        nuevas_filas.append(fila)
+
+    df_centros = pd.DataFrame(nuevas_filas)
+    df_completo = pd.concat([df, df_centros], ignore_index=True)
+    return df_completo
 
 
 def _codificar_factor(serie, v_bajo, v_alto):
@@ -334,21 +371,68 @@ elif st.session_state.stage == 'preview':
 
         centros = _detectar_centros(raw, factores)
         replicas = _detectar_replicas(raw, factores, respuesta)
+
+        st.markdown("---")
+        st.markdown("### ¿Que detecto el programa?")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Factores", len(factores))
+        with col2:
+            st.metric("Puntos centrales", centros, delta="(filas con todos los factores = 0)")
+        with col3:
+            st.metric("Replicas puras", replicas, delta="(filas identicas en factores)")
+
+        # Explicacion de puntos centrales
+        with st.expander("💡 ¿Que son los puntos centrales?"):
+            st.markdown("""
+            Los **puntos centrales** son corridas experimentales donde **todos los factores están en su valor intermedio** (nivel 0 en codificación).
+
+            **Ejemplo con 3 factores (A, B, C):**
+            - Esquinas del diseño: A=-1, B=-1, C=-1  |  A=+1, B=-1, C=-1  |  etc.
+            - **Punto central:** A=**0**, B=**0**, C=**0**
+
+            **Para qué sirven:**
+            - Probar si existe **curvatura** en la superficie de respuesta
+            - Estimar el **error puro** del experimento
+            - Son la base del **Analisis Via 2**
+
+            **Como los agrego:**
+            En tu Excel, añade 3-5 filas extra donde todos los factores tengan su valor medio.
+            """)
+
         st.markdown(f"""
-        **Resumen:**
-        - Factores: **{len(factores)}** ({', '.join(factores)})
-        - Filas: **{len(raw)}**
-        - Puntos centrales: **{centros}**
-        - Replicas puras: **{replicas}**
-        - Codificacion: **{'Codificada (-1, 0, +1)' if es_cod else 'NO codificada (valores reales)'}**
+        **Codificacion detectada:** {'Codificada (-1, 0, +1)' if es_cod else 'NO codificada (valores reales)'}
         """)
 
         sug_analisis, sug_msg = _sugerir_analisis(raw, factores, respuesta)
-        _info_box("Sugerencia", sug_msg, tipo='tip')
+        _info_box("Sugerencia del programa", sug_msg, tipo='tip')
 
-        if st.button("Continuar a codificacion", type='primary', use_container_width=True):
-            st.session_state.stage = 'encode'
-            st.rerun()
+        # Boton para agregar centros automaticamente (si no hay)
+        if centros == 0 and sug_analisis == 'factorial_via2':
+            st.markdown("---")
+            _info_box("No tienes puntos centrales",
+                      "El programa detecto que necesitas puntos centrales para el Analisis Via 2. "
+                      "Puedes agregarlos automaticamente o hacerlo manualmente en tu Excel.",
+                      tipo='warning')
+            n_centros = st.number_input("Cuantos puntos centrales quieres agregar?", min_value=1, max_value=10, value=3, step=1)
+            if st.button("➕ Agregar puntos centrales automaticamente", use_container_width=True):
+                raw_nuevo = _agregar_centros(raw, factores, respuesta, n_centros=int(n_centros))
+                st.session_state.raw = raw_nuevo
+                st.success(f"Se agregaron {int(n_centros)} puntos centrales. La matriz ahora tiene {len(raw_nuevo)} filas.")
+                st.rerun()
+
+        # Botones de navegacion
+        st.markdown("---")
+        nav_c = st.columns([1, 3])
+        with nav_c[0]:
+            if st.button("← Regresar", use_container_width=True):
+                st.session_state.stage = 'upload'
+                st.rerun()
+        with nav_c[1]:
+            if st.button("Continuar a codificacion →", type='primary', use_container_width=True):
+                st.session_state.stage = 'encode'
+                st.rerun()
 
 
 # ---------- ETAPA 3: CODIFICAR / DESCODIFICAR ----------
@@ -434,13 +518,20 @@ elif st.session_state.stage == 'encode':
     st.markdown("### ¿Con cual matriz quieres hacer el analisis?")
     eleccion = st.radio("Selecciona:", ["Codificada", "Valores Reales"], horizontal=True)
 
-    if st.button("Continuar a seleccion de analisis", type='primary', use_container_width=True):
-        if eleccion == "Codificada":
-            st.session_state.df_work = df_cod.copy()
-        else:
-            st.session_state.df_work = df_real.copy()
-        st.session_state.stage = 'analysis_select'
-        st.rerun()
+    st.markdown("---")
+    nav_c = st.columns([1, 3])
+    with nav_c[0]:
+        if st.button("← Regresar a revision", use_container_width=True):
+            st.session_state.stage = 'preview'
+            st.rerun()
+    with nav_c[1]:
+        if st.button("Continuar a seleccion de analisis →", type='primary', use_container_width=True):
+            if eleccion == "Codificada":
+                st.session_state.df_work = df_cod.copy()
+            else:
+                st.session_state.df_work = df_real.copy()
+            st.session_state.stage = 'analysis_select'
+            st.rerun()
 
 
 # ---------- ETAPA 4: SELECCION DE ANALISIS ----------
@@ -469,48 +560,111 @@ elif st.session_state.stage == 'analysis_select':
 
     st.markdown("### Tipo de analisis")
 
+    with st.expander("📖 Guia rapida: ¿Cual elegir?", expanded=True):
+        st.markdown("""
+        | Si tu diseno tiene... | Elige... |
+        |---|---|
+        | Solo esquinas (sin centros, sin replicas) | **Via 3** (Lenth) |
+        | Esquinas + puntos centrales (filas con todos los factores = 0) | **Via 2** |
+        | Esquinas + replicas completas del diseno | **Via 1** |
+        | Esquinas + puntos axiales (valores como ±1.414) + centros | **CCD** |
+
+        **Ejemplo de punto central:** Si tus factores son Temperatura (50, 125, 200) y pH (5, 7.5, 10),
+        una fila con Temp=125 y pH=7.5 es un **punto central**.
+        """)
+
     opciones = {
-        'factorial_via1': f'Factorial Via 1: 2^{k} con replicas puras',
-        'factorial_via2': f'Factorial Via 2: 2^{k} con puntos centrales',
-        'factorial_via3': f'Factorial Via 3: 2^{k} no replicado (Lenth)',
+        'factorial_via1': f'Via 1: 2^{k} con replicas puras',
+        'factorial_via2': f'Via 2: 2^{k} con puntos centrales ({centros} detectados)',
+        'factorial_via3': f'Via 3: 2^{k} no replicado (Lenth)',
         'ccd': 'Superficie de Respuesta (CCD)',
     }
 
-    analisis = st.radio("Selecciona:", list(opciones.keys()), format_func=lambda x: opciones[x], key="sel_analisis")
+    analisis = st.radio("Selecciona tu analisis:", list(opciones.keys()),
+                        format_func=lambda x: opciones[x], key="sel_analisis")
     st.session_state.analisis_tipo = analisis
 
     warnings = _validar_analisis_vs_diseno(raw, factores, respuesta, analisis)
     if warnings:
         for w in warnings:
             _info_box("Advertencia", w, tipo='warning')
+            if "centrales" in w.lower():
+                st.markdown("""
+                **Como solucionarlo:**
+                1. Vuelve a tu Excel
+                2. Añade 3-5 filas donde todos los factores tengan su **valor medio**
+                3. Sube el archivo de nuevo
+                4. Selecciona **Via 2**
+                """)
 
     explicaciones = {
-        'factorial_via1': "**Via 1:** Diseno 2^k con replicas puras. Usa cuando tienes multiples replicas del diseno completo.",
-        'factorial_via2': "**Via 2:** Diseno 2^k con puntos centrales. Usa cuando tienes puntos centrales adicionales para probar curvatura.",
-        'factorial_via3': "**Via 3:** Diseno 2^k no replicado. Usa Lenth cuando NO tienes replicas ni centros.",
-        'ccd': "**CCD:** Superficie de Respuesta. Usa cuando tienes puntos axiales, esquinas y centros.",
+        'factorial_via1': "**Via 1:** Analisis para disenos con **replicas completas**. Cada condicion experimental se repite varias veces.",
+        'factorial_via2': f"**Via 2:** Analisis para disenos con **puntos centrales** ({centros} detectados en tu archivo). Permite probar curvatura.",
+        'factorial_via3': "**Via 3:** Analisis para disenos **sin replicas ni centros**. Usa el metodo de Lenth para detectar efectos significativos.",
+        'ccd': "**CCD:** Analisis de Superficie de Respuesta. Requiere puntos axiales (±α) ademas de esquinas y centros.",
     }
     st.markdown(explicaciones.get(analisis, ""))
 
+    # DISEÑO FRACCIONADO - GUIA INTERACTIVA
     if analisis.startswith('factorial') and k >= 4:
         st.markdown("---")
-        st.markdown("### Modelo fraccionado?")
-        es_fracc = st.checkbox("Usar diseno fraccionado (2^(k-p))", value=False)
+        st.markdown("### 🔀 ¿Necesitas un diseño fraccionado?")
+
+        with st.expander("📖 ¿Que es un diseño fraccionado y cuando usarlo?"):
+            st.markdown(f"""
+            Un **diseño fraccionado** te permite estudiar **{k} factores** con **menos experimentos** que un diseno completo.
+
+            **Diseno completo:** 2^{k} = **{2**k} esquinas** (muchas corridas)
+            **Diseno fraccionado:** 2^(k-p) = menos esquinas
+
+            | Valor de p | Que significa | Esquinas | Resolucion | Cuando usarlo |
+            |---|---|---|---|---|
+            | **p=1** (media fraccion) | 2^({k}-1) = 2^{k-1} | **{2**(k-1)}** | {k} | Recomendado. Los principales no se confunden entre si. |
+            | **p=2** (cuarto) | 2^({k}-2) = 2^{k-2} | **{2**(k-2)}** | {k-1} | Solo si necesitas MUY pocas corridas. |
+            | **p=3** (octavo) | 2^({k}-3) = 2^{k-3} | **{2**(k-3)}** | {k-2} | No recomendado. Mucha confusion. |
+
+            **Regla de oro:** Usa **p=1** (media fraccion) a menos que tengas una buena razon para usar otra.
+
+            **Resolucion:** Indica que efectos pueden estar confundidos.
+            - **Resolucion V** o mas: Efectos principales e interacciones de 2 vias son libres de confusion.
+            - **Resolucion III**: Los principales pueden estar confundidos con interacciones de 2 vias.
+            """)
+
+        es_fracc = st.checkbox("Si, mi diseno es fraccionado", value=False)
         st.session_state.modelo_fraccionado = es_fracc
+
         if es_fracc:
-            p = st.selectbox("Fraccion (p):", [1, 2, 3], index=0)
+            p = st.selectbox("Fraccion (p) - Recomendado: p=1:", [1, 2, 3], index=0,
+                            help="p=1 = media fraccion (recomendado). p=2 = cuarto de fraccion.")
             resolucion = k - p + 1
-            st.info(f"Diseno 2^({k}-{p}) = 2^{k-p} = {2**(k-p)} esquinas. Resolucion: {resolucion}.")
-            if resolucion < 3:
-                _info_box("Precaucion", f"Resolucion {resolucion} < III. Los efectos principales estaran confundidos.", tipo='warning')
+            esquinas_frac = 2**(k-p)
+
+            st.info(f"**Diseno 2^({k}-{p}) = 2^{k-p} = {esquinas_frac} esquinas | Resolucion: {resolucion}**")
+
+            if resolucion >= 5:
+                _info_box("Excelente", f"Resolucion {resolucion}: Los efectos principales y las interacciones de 2 vias NO estan confundidas entre si.", tipo='success')
+            elif resolucion == 4:
+                _info_box("Bueno", f"Resolucion {resolucion}: Los efectos principales estan libres de confusion, pero las interacciones de 2 vias pueden estar confundidas entre si.", tipo='tip')
+            elif resolucion == 3:
+                _info_box("Aceptable", f"Resolucion {resolucion}: Los efectos principales estan libres entre si, pero pueden estar confundidos con interacciones de 2 vias.", tipo='warning')
+            else:
+                _info_box("Precaucion", f"Resolucion {resolucion}: Los efectos principales estan confundidos entre si. No se recomienda.", tipo='warning')
+
             st.session_state.resolucion = resolucion
 
-    if st.button("Continuar al analisis", type='primary', use_container_width=True):
-        if warnings and any("requiere" in w.lower() for w in warnings):
-            st.error("Corrige las advertencias antes de continuar.")
-        else:
-            st.session_state.stage = 'results'
+    st.markdown("---")
+    nav_c = st.columns([1, 3])
+    with nav_c[0]:
+        if st.button("← Regresar a matrices", use_container_width=True):
+            st.session_state.stage = 'encode'
             st.rerun()
+    with nav_c[1]:
+        if st.button("Continuar al analisis →", type='primary', use_container_width=True):
+            if warnings and any("requiere" in w.lower() for w in warnings):
+                st.error("Corrige las advertencias antes de continuar, o elige un analisis diferente.")
+            else:
+                st.session_state.stage = 'results'
+                st.rerun()
 
 
 # ---------- ETAPA 5: RESULTADOS ----------
@@ -681,15 +835,20 @@ elif st.session_state.stage == 'results':
 
         with tab3:
             try:
-                fig = ce._gen_main_effects(R)
+                fig = ce._gen_main_effects(R, spec=None, mapeos=st.session_state.mapeos_inversos)
                 st.pyplot(fig)
             except Exception as e:
                 st.warning(f"No se pudieron generar efectos principales: {e}")
 
         with tab4:
             try:
-                fig = ce._gen_interactions(R)
-                st.pyplot(fig)
+                fig_list = ce._gen_interactions(R, mapeos=st.session_state.mapeos_inversos)
+                for fn in fig_list:
+                    st.image(fn)
+                _info_box("Graficos de interaccion",
+                          "Muestran como el efecto de un factor cambia segun el nivel del otro. "
+                          "Lineas paralelas = sin interaccion. Lineas que se cruzan = interaccion significativa.",
+                          tipo='tip')
             except Exception as e:
                 st.warning(f"No se pudieron generar interacciones: {e}")
 
