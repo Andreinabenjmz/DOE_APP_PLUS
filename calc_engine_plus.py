@@ -813,8 +813,7 @@ def _gen_seminormal(R):
     plt.close()
     return fn
 
-
-def _gen_main_effects(R, spec=None, mapeos=None):
+def _gen_main_effects(R, spec=None, mapeos=None, unidades=None):
     nf = len(R['factores'])
     fig, axes = plt.subplots(1, nf, figsize=(4 * nf, 4), sharey=True)
     if nf == 1:
@@ -822,22 +821,25 @@ def _gen_main_effects(R, spec=None, mapeos=None):
 
     for i, (ax, f) in enumerate(zip(axes, R['factores'])):
         me = R['main_effects'][f]
+        unidad = (unidades or {}).get(f, '').strip()
+        etiqueta_f = f"{f} ({unidad})" if unidad else f
+
         if mapeos and f in mapeos and -1 in mapeos[f] and 1 in mapeos[f]:
             v_low = mapeos[f][-1]
             v_high = mapeos[f][1]
             ax.plot([v_low, v_high], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
             ax.set_xticks([v_low, v_high])
             ax.set_xticklabels([f'{v_low}', f'{v_high}'])
-            ax.set_xlabel(f)
+            ax.set_xlabel(etiqueta_f)
         else:
             ax.plot([-1, 1], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
             ax.set_xticks([-1, 1])
             ax.set_xticklabels(['-1', '+1'])
-            ax.set_xlabel(f)
+            ax.set_xlabel(etiqueta_f)
 
         if i == 0:
             ax.set_ylabel('Media de Y')
-        ax.set_title(f'Efecto principal: {f}')
+        ax.set_title(f'Efecto principal: {etiqueta_f}')
         ax.grid(alpha=0.3)
 
         if spec:
@@ -850,8 +852,7 @@ def _gen_main_effects(R, spec=None, mapeos=None):
     plt.close()
     return fn
 
-
-def _gen_interactions(R, custom_order=None, mapeos=None):
+def _gen_interactions(R, custom_order=None, mapeos=None, unidades=None):
     sig = [n for n in R['effects'] if len(n.split('*')) == 2]
     if custom_order is not None and len(custom_order) > 0:
         sig = [n for n in custom_order if n in R['effects']]
@@ -872,6 +873,10 @@ def _gen_interactions(R, custom_order=None, mapeos=None):
             if len(parts) == 2:
                 f1, f2 = parts
                 it = R['interactions'][(f1, f2)]
+                u1 = (unidades or {}).get(f1, '').strip()
+                u2 = (unidades or {}).get(f2, '').strip()
+                lbl1 = f"{f1} ({u1})" if u1 else f1
+                suf2 = f" {u2}" if u2 else ""
 
                 if mapeos and f1 in mapeos and f2 in mapeos:
                     v1_low = mapeos[f1].get(-1, -1)
@@ -881,12 +886,12 @@ def _gen_interactions(R, custom_order=None, mapeos=None):
 
                     ax.plot([v1_low, v1_high], [it['mll'], it['mhl']],
                             'o-', color='#90CAF9', markersize=8, linewidth=2,
-                            label=f'{f2} = {v2_low}')
+                            label=f'{f2} = {v2_low}{suf2}')
                     ax.plot([v1_low, v1_high], [it['mlh'], it['mhh']],
                             's-', color='#EF9A9A', markersize=8, linewidth=2,
-                            label=f'{f2} = {v2_high}')
+                            label=f'{f2} = {v2_high}{suf2}')
                     ax.set_xticks([v1_low, v1_high])
-                    ax.set_xlabel(f1)
+                    ax.set_xlabel(lbl1)
                 else:
                     ax.plot([-1, 1], [it['mll'], it['mhl']], 'o-', color='#90CAF9',
                             markersize=8, linewidth=2, label=f'{f2} = -1')
@@ -894,7 +899,7 @@ def _gen_interactions(R, custom_order=None, mapeos=None):
                             markersize=8, linewidth=2, label=f'{f2} = +1')
                     ax.set_xticks([-1, 1])
                     ax.set_xticklabels([f'{f1} = -1', f'{f1} = +1'])
-                    ax.set_xlabel(f1)
+                    ax.set_xlabel(lbl1)
 
                 ax.set_ylabel('Media de Y')
                 ax.legend(loc='best', framealpha=0.9)
@@ -1090,17 +1095,17 @@ def _ecuacion_str(R, df=None):
     return f"Y = {intercepto:.4f} " + " ".join(terms)
 
 
-def ecuacion_no_codificada(R, mapeos_inversos):
+
+def ecuacion_no_codificada(R, mapeos_inversos, unidades=None):
     """
     Convierte la ecuación en unidades codificadas a unidades reales (no codificadas),
-    coincidiendo con 'Regression Equation in Uncoded Units' de Minitab.
+    incluyendo las unidades de cada factor si fueron configuradas.
     """
     if not mapeos_inversos:
         return None
 
     factores = R['factores']
-    m = {}
-    r = {}
+    m, r = {}, {}
     for f in factores:
         if f not in mapeos_inversos or -1 not in mapeos_inversos[f] or 1 not in mapeos_inversos[f]:
             return None
@@ -1111,6 +1116,10 @@ def ecuacion_no_codificada(R, mapeos_inversos):
             return None
         m[f] = (v_low + v_high) / 2.0
         r[f] = rango
+
+    def _lbl(f):
+        u = (unidades or {}).get(f, '').strip()
+        return f"{f} ({u})" if u else f
 
     b0 = R.get('intercepto_ols', R.get('yf_bar', R['y_bar']))
     incluir = list(R.get('terms_included', R['effects'].keys()))
@@ -1138,10 +1147,11 @@ def ecuacion_no_codificada(R, mapeos_inversos):
     terminos = [f"{u_int:.4f}"]
     for f in factores:
         if abs(u_lin[f]) > 1e-12:
-            terminos.append(f"{u_lin[f]:+.5g}*{f}")
+            terminos.append(f"{u_lin[f]:+.5g}*{_lbl(f)}")
     for t, c in u_int2.items():
         if abs(c) > 1e-12:
-            terminos.append(f"{c:+.5g}*{t}")
+            f1, f2 = t.split('*')
+            terminos.append(f"{c:+.5g}*{_lbl(f1)}*{_lbl(f2)}")
     if R.get('tiene_centro'):
         coef_curv = R['yc_bar'] - R['yf_bar']
         terminos.append(f"{coef_curv:+.4f}*Ct_Pt")
