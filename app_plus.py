@@ -287,7 +287,7 @@ with st.sidebar:
 
     st.markdown("### Generar datos")
     st.markdown("Necesitas crear un diseno experimental?")
-    st.link_button("Ir a Bioprocess Tool", "https://bioprocesstools.com/doe-generator/", use_container_width=True)
+    st.link_button("Ir a Bioprocess Tool", "https://bioprocesstool.com/", use_container_width=True)
 
     st.markdown("---")
     st.markdown("### Contexto")
@@ -392,12 +392,15 @@ elif st.session_state.stage == 'preview':
         st.markdown("---")
         st.markdown("### ¿Que detecto el programa?")
 
-        # Detectar centros automaticamente
+        # Detectar centros automaticamente y guardar inmediatamente
         n_centros_detect, idx_centros = _detectar_centros(raw, factores)
-        # Si el usuario ya confirmo filas, usar esas
+        # Si el usuario ya confirmo/corregio filas previamente, usar esas
         if 'filas_centro_idx' in st.session_state and st.session_state.filas_centro_idx:
             idx_centros = st.session_state.filas_centro_idx
             n_centros_detect = len(idx_centros)
+        elif n_centros_detect > 0:
+            # Guardar automaticamente los detectados para uso en etapas posteriores
+            st.session_state.filas_centro_idx = idx_centros
 
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -619,7 +622,8 @@ elif st.session_state.stage == 'analysis_select':
               "Elige el tipo de analisis que mejor se adapte a tu diseno.",
               tipo='info')
 
-    centros = _detectar_centros(raw, factores)[0]
+    # Usar centros confirmados/guardados en session_state (funciona para codificada y decodificada)
+    centros = len(st.session_state.get('filas_centro_idx', []))
     replicas = _detectar_replicas(raw, factores, respuesta)
     esq = len(raw) - centros
 
