@@ -1,8 +1,9 @@
 # app_plus.py
-# Interfaz Streamlit - Flujo completo redisenado (Factorial 2^k + Rama CCD)
-# Cargar -> Confirmar columnas -> Niveles/Unidades + Codificar -> Puntos centrales y Analisis -> Resultados / CCD
+# Interfaz Streamlit - Flujo completo (Factorial 2^k + Rama CCD)
+# 1. Cargar -> 2. Confirmar columnas -> 3A. Guardar niveles/unidades -> 3B. Matriz codificada -> 4. Centros y analisis -> 5. Resultados / CCD
 
 import importlib
+import inspect
 import os
 import numpy as np
 import pandas as pd
@@ -29,14 +30,15 @@ def _init_state():
         'df_cod': None,
         'df_real': None,
         'factores': [],
-        'respuesta': None,
         'respuestas': [],
+        'respuesta': None,
         'corrida_col': None,
         'es_codificada': False,
         'niveles_guardados': {},
         'unidades_factores': {},
         'mapeos_niveles': {},
         'mapeos_inversos': {},
+        'niveles_confirmados_paso3': False,
         'filas_centro_idx': [],
         'centros_confirmados': False,
         'analisis_tipo': None,
@@ -64,6 +66,13 @@ def _init_state():
 _init_state()
 
 
+def _to_numeric_clean(serie):
+    if pd.api.types.is_numeric_dtype(serie):
+        return pd.to_numeric(serie, errors='coerce')
+    limpia = serie.astype(str).str.strip().str.replace(',', '.', regex=False)
+    return pd.to_numeric(limpia, errors='coerce')
+
+
 def _detectar_columnas(raw):
     factores, respuestas, descartar = [], [], []
     id_names = {
@@ -75,24 +84,23 @@ def _detectar_columnas(raw):
         'pt type', 'pt_type', 'tipo punto', 'tipo de punto',
         'replicate', 'replica', 'rep',
     }
-    resp_names = {'y', 'response', 'respuesta', 'resp', 'rendimiento', 'yield'}
+    resp_names = {'y', 'response', 'respuesta', 'resp', 'rendimiento', 'yield', 'tamano', 'tamaño', 'potencial', 'zeta'}
 
     for c in raw.columns:
         nombre_lower = str(c).strip().lower()
-        nombre_norm = nombre_lower.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')
         vals = raw[c].dropna().unique().tolist()
         n_unicos = len(vals)
 
-        if any(x in nombre_norm for x in ['corrida', 'run', 'orden', 'order']):
+        if any(x in nombre_lower for x in ['corrida', 'run', 'orden', 'order']):
             if n_unicos == len(raw):
                 descartar.append(c)
                 continue
 
-        if nombre_norm in id_names or n_unicos <= 1:
+        if nombre_lower in id_names or n_unicos <= 1:
             descartar.append(c)
             continue
 
-        if nombre_norm in resp_names or any(x in nombre_norm for x in ['resp', 'yield', 'rend']):
+        if nombre_lower in resp_names or any(x in nombre_lower for x in ['resp', 'yield', 'rend']):
             if pd.api.types.is_numeric_dtype(raw[c]):
                 respuestas.append(c)
                 continue
@@ -101,12 +109,16 @@ def _detectar_columnas(raw):
             if n_unicos in [2, 3]:
                 factores.append(c)
                 continue
-            # Deteccion segura de factores CCD rotacional (5 niveles simetricos)
-            if n_unicos == 5 and len(raw) >= 11:
-                vs = sorted(float(v) for v in vals)
-                if abs(vs[2] - (vs[0] + vs[4]) / 2.0) < 1e-3 * max(1.0, abs(vs[4] - vs[0])):
-                    factores.append(c)
-                    continue
+            # Detectar factores CCD rotacionales (4 o 5 niveles simetricos)
+            if len(raw) >= 11 and n_unicos in [4, 5]:
+                s_num = np.sort(pd.to_numeric(raw[c], errors='coerce').dropna().unique())
+                if len(s_num) >= 4:
+                    mid = (s_num.min() + s_num.max()) / 2.0
+                    simetrico = abs((s_num.mean()) - mid) < (s_num.max() - s_num.min()) * 0.25
+                    tiene_centro = np.min(np.abs(s_num - mid)) < (s_num.max() - s_num.min()) * 0.1
+                    if simetrico and tiene_centro:
+                        factores.append(c)
+                        continue
             respuestas.append(c)
             continue
 
@@ -120,20 +132,30 @@ def _detectar_columnas(raw):
 
 
 def _es_codificada(raw, cols):
+    """Detecta si las columnas de factores ya estan en escala codificada (-1, 0, +1 o CCD +/-alpha)."""
+    if not cols:
+        return False
     for c in cols:
-        if not pd.api.types.is_numeric_dtype(raw[c]):
+        serie = _to_numeric_clean(raw[c])
+        if serie.isna().any():
             return False
-        vals = set(pd.to_numeric(raw[c], errors='coerce').dropna().unique())
-        if not vals.issubset({-1, 0, 1}):
+        vals = np.unique(np.round(serie.dropna().to_numpy(dtype=float), 4))
+        if len(vals) < 2:
+            return False
+        if set(vals).issubset({-1.0, 0.0, 1.0}):
+            continue
+        es_simetrico = abs(vals.min() + vals.max()) < 1e-3
+        tiene_base = {-1.0, 0.0, 1.0}.issubset(set(vals))
+        en_rango_cod = (vals.min() >= -3.5) and (vals.max() <= 3.5)
+        if not (es_simetrico and tiene_base and en_rango_cod):
             return False
     return True
 
 
 def _detectar_centros(df_cod, cols):
-    """Detecta filas donde TODOS los factores codificados estan cercanos a 0 (centros).
-    Devuelve (n_centros, lista_indices)."""
-    df_num = df_cod[cols].apply(pd.to_numeric, errors='coerce')
-    mascara = df_num.apply(lambda r: all(abs(v) < 0.5 for v in r), axis=1)
+    """Detecta filas donde TODOS los factores codificados estan cercanos a 0 (centros)."""
+    df_num = df_cod[cols].apply(_to_numeric_clean)
+    mascara = df_num.apply(lambda r: all(pd.notna(v) and abs(v) < 0.5 for v in r), axis=1)
     indices = df_cod[mascara].index.tolist()
     return len(indices), indices
 
@@ -144,7 +166,7 @@ def _detectar_replicas(df_cod, cols, resp_col):
         return 0
     df_esq = df_cod.copy()
     for c in cols:
-        df_esq[c] = pd.to_numeric(df_esq[c], errors='coerce')
+        df_esq[c] = _to_numeric_clean(df_esq[c]).round(4)
     if st.session_state.get('filas_centro_idx'):
         df_esq = df_esq.drop(st.session_state.filas_centro_idx, errors='ignore')
     else:
@@ -190,9 +212,6 @@ def _validar_analisis_vs_diseno(df_cod, factores, respuesta, analisis):
 
 def _sugerir_analisis(df_cod, factores, respuesta):
     n = len(df_cod)
-    if ce_rsm.es_diseno_ccd(df_cod, factores):
-        return 'ccd', "Detectados puntos axiales y centrales tipicos de un diseno CCD. Sugerencia: Superficie de Respuesta (CCD)."
-
     if st.session_state.get('filas_centro_idx'):
         centros = len(st.session_state.filas_centro_idx)
     else:
@@ -200,6 +219,8 @@ def _sugerir_analisis(df_cod, factores, respuesta):
     esquinas = n - centros
     replicas = _detectar_replicas(df_cod, factores, respuesta)
 
+    if hasattr(ce_rsm, 'es_diseno_ccd') and ce_rsm.es_diseno_ccd(df_cod, factores):
+        return 'ccd', f"Detectado diseno CCD ({n} corridas con puntos axiales y {centros} centros). Sugerencia: Superficie de Respuesta (CCD)."
     if centros > 0:
         return 'factorial_via2', f"Detectado: {esquinas} esquinas + {centros} centros. Sugerencia: Via 2."
     elif replicas > 0:
@@ -209,17 +230,24 @@ def _sugerir_analisis(df_cod, factores, respuesta):
 
 
 def _codificar_factor(serie, v_bajo, v_alto):
+    num = _to_numeric_clean(serie)
     v_medio = (v_bajo + v_alto) / 2.0
     rango = (v_alto - v_bajo) / 2.0
     if rango == 0:
-        return pd.to_numeric(serie, errors='coerce')
-    return (pd.to_numeric(serie, errors='coerce') - v_medio) / rango
+        return num
+    return (num - v_medio) / rango
 
 
 def _limpiar_niveles_y_widgets(factores):
     """Restablece los niveles guardados y las claves de widgets a sus valores por defecto."""
     st.session_state.niveles_guardados = {}
     st.session_state.unidades_factores = {}
+    st.session_state.mapeos_niveles = {}
+    st.session_state.mapeos_inversos = {}
+    st.session_state.niveles_confirmados_paso3 = False
+    st.session_state.df_cod = None
+    st.session_state.df_real = None
+    st.session_state.df_work = None
     for f in factores:
         for pref in ('real_low_', 'real_high_', 'low_', 'high_', 'unit_'):
             st.session_state.pop(f"{pref}{f}", None)
@@ -254,13 +282,13 @@ with st.sidebar:
             stages = {
                 'ccd_full': '1. CCD: Modelo completo',
                 'ccd_refine': '2. CCD: Refinar modelo',
-                'ccd_diag': '3. CCD: Superficies, Contornos y Opt.'
+                'ccd_diag': '3. CCD: Contornos, 3D y Opt.'
             }
         else:
             stages = {
                 'upload': '1. Cargar archivo',
                 'preview': '2. Confirmar columnas',
-                'encode': '3. Niveles, unidades y codificacion',
+                'encode': '3. Guardar niveles y matriz codificada',
                 'analysis_select': '4. Puntos centrales y analisis',
                 'results': '5. Resultados'
             }
@@ -302,10 +330,10 @@ if st.session_state.stage == 'upload':
 
     ### Flujo de trabajo:
     1. **Carga tu matriz** de diseno (Excel o CSV)
-    2. **Confirma las columnas** (factores y una o varias respuestas)
-    3. **Asigna niveles reales y unidades** (el programa genera la matriz codificada `-1, 0, +1`)
+    2. **Confirma las columnas** (factores y respuesta(s))
+    3. **Guarda niveles reales y unidades** (el programa deja lista y aislada la matriz codificada `-1, 0, +1`)
     4. **Detecta puntos centrales y elige el analisis** (Via 1, 2, 3 o CCD)
-    5. **Obtien resultados**: ANOVA, coeficientes, ecuacion, graficos 2D y Superficies 3D
+    5. **Obtien resultados**: ANOVA, coeficientes, ecuacion, graficos y superficies 3D
     """)
 
     uploaded = st.file_uploader("Sube tu archivo Excel o CSV", type=['xlsx', 'csv'])
@@ -317,17 +345,33 @@ if st.session_state.stage == 'upload':
             else:
                 raw = pd.read_csv(uploaded)
             raw.columns = raw.columns.astype(str).str.strip()
+
+            # Reset limpio del archivo y analisis previo (conservando niveles_guardados y unidades_factores)
             st.session_state.raw = raw
             st.session_state.df_cod = None
             st.session_state.df_real = None
             st.session_state.df_work = None
+            st.session_state.niveles_confirmados_paso3 = False
             st.session_state.filas_centro_idx = []
             st.session_state.centros_confirmados = False
             st.session_state.factores = []
-            st.session_state.respuesta = None
             st.session_state.respuestas = []
+            st.session_state.respuesta = None
+            st.session_state.corrida_col = None
             st.session_state.analisis_tipo = None
-            # No borramos niveles_guardados para mantener los valores y unidades configurados
+            st.session_state.modelo_fraccionado = False
+            st.session_state.resolucion = None
+            st.session_state.R = None
+            st.session_state.R_rsm = None
+            st.session_state.df_ccd_raw = None
+            st.session_state.factores_ccd = []
+            st.session_state.respuesta_ccd = []
+            st.session_state.R_ccd_full = None
+            st.session_state.R_ccd = None
+            st.session_state.opt_ccd = None
+            for wk in ('sel_factores', 'sel_respuestas', 'sel_analisis', 'confirm_centros',
+                       'confirm_no_centros', 'modo_sel', 'modo_formato_manual'):
+                st.session_state.pop(wk, None)
 
             st.success(f"Archivo cargado: {raw.shape[0]} filas × {raw.shape[1]} columnas")
 
@@ -337,7 +381,7 @@ if st.session_state.stage == 'upload':
                 st.info(f"Columnas descartadas (metadatos): {', '.join(descartados)}")
 
             if len(fact_cands) == 0:
-                st.error("No se detectaron factores. Verifica que tus columnas numericas tengan 2, 3 o 5 niveles.")
+                st.error("No se detectaron factores. Verifica tus columnas numericas.")
             elif len(resp_cands) == 0:
                 st.error("No se detecto columna de respuesta.")
             else:
@@ -355,9 +399,8 @@ elif st.session_state.stage == 'preview':
     raw = st.session_state.raw
 
     _info_box("Paso 2: Revision de columnas",
-              "Confirma que el programa detecto correctamente los factores y la(s) respuesta(s) "
-              "(puedes elegir varias, por ejemplo Tamano y Potencial Z al mismo tiempo). "
-              "En el siguiente paso configuraras los niveles reales.",
+              "Confirma que el programa detecto correctamente los factores y la(s) respuesta(s). "
+              "Puedes seleccionar multiples respuestas a la vez (por ejemplo, Tamaño y Potencial Z para CCD).",
               tipo='info')
 
     fact_cands, resp_cands, _ = _detectar_columnas(raw)
@@ -371,17 +414,19 @@ elif st.session_state.stage == 'preview':
     st.markdown("### Factores")
     factores = st.multiselect("Selecciona los factores:", raw.columns.tolist(), default=default_factores, key="sel_factores")
 
-    default_resps = [r for r in st.session_state.respuestas if r in raw.columns]
+    opts_resp = [c for c in raw.columns if c not in factores and c != st.session_state.corrida_col]
+    if not opts_resp:
+        opts_resp = raw.columns.tolist()
+
+    default_resps = [r for r in st.session_state.respuestas if r in opts_resp]
     if not default_resps:
-        default_resps = [r for r in resp_cands if r not in factores]
-        if not default_resps:
-            cands_alt = [c for c in raw.columns if c not in factores and c != st.session_state.corrida_col]
-            default_resps = cands_alt[:1]
+        cands_validos = [r for r in resp_cands if r in opts_resp]
+        default_resps = cands_validos if cands_validos else [opts_resp[0]]
 
     st.markdown("### Respuesta(s)")
     respuestas = st.multiselect(
         "Selecciona una o varias variables de respuesta:",
-        raw.columns.tolist(),
+        opts_resp,
         default=default_resps,
         key="sel_respuestas"
     )
@@ -391,23 +436,36 @@ elif st.session_state.stage == 'preview':
     elif len(respuestas) == 0:
         st.warning("Selecciona al menos 1 variable de respuesta.")
     else:
+        factores_cambiaron = (factores != st.session_state.factores)
         st.session_state.factores = factores
         st.session_state.respuestas = respuestas
         st.session_state.respuesta = respuestas[0]
+        if factores_cambiaron:
+            st.session_state.niveles_confirmados_paso3 = False
 
-        es_cod = _es_codificada(raw, factores)
+        es_cod_auto = _es_codificada(raw, factores)
+        fmt_auto_txt = "Matriz codificada (-1, 0, +1)" if es_cod_auto else "Matriz NO codificada (valores reales)"
+
+        modo_fmt = st.radio(
+            f"Formato de la matriz (detectado automaticamente: **{fmt_auto_txt}**):",
+            ["Deteccion automatica", "Forzar: Ya viene codificada (-1, 0, +1)", "Forzar: Viene en valores reales"],
+            horizontal=True,
+            key="modo_formato_manual"
+        )
+        if "Ya viene codificada" in modo_fmt:
+            es_cod = True
+        elif "valores reales" in modo_fmt:
+            es_cod = False
+        else:
+            es_cod = es_cod_auto
         st.session_state.es_codificada = es_cod
 
         cols_mostrar = []
         if st.session_state.corrida_col:
             cols_mostrar.append(st.session_state.corrida_col)
         cols_mostrar.extend(factores)
-        cols_mostrar.extend([r for r in respuestas if r not in cols_mostrar])
+        cols_mostrar.extend(respuestas)
         st.dataframe(raw[cols_mostrar], use_container_width=True)
-
-        st.markdown(f"""
-        **Formato detectado:** {'Matriz codificada (-1, 0, +1)' if es_cod else 'Matriz NO codificada (valores reales)'}
-        """)
 
         st.markdown("---")
         nav_c = st.columns([1, 3])
@@ -421,158 +479,190 @@ elif st.session_state.stage == 'preview':
                 st.rerun()
 
 
-# ---------- ETAPA 3: NIVELES, UNIDADES Y MATRIZ CODIFICADA ----------
+# ---------- ETAPA 3: GUARDAR NIVELES/UNIDADES (3A) Y MATRIZ CODIFICADA AISLADA (3B) ----------
 elif st.session_state.stage == 'encode':
     st.title("3. Niveles Reales, Unidades y Matriz Codificada")
 
     raw = st.session_state.raw
     factores = st.session_state.factores
-    respuestas = st.session_state.respuestas or [st.session_state.respuesta]
+    respuestas = st.session_state.respuestas if st.session_state.respuestas else ([st.session_state.respuesta] if st.session_state.respuesta else [])
+    respuesta = respuestas[0]
     es_cod = st.session_state.es_codificada
 
     if es_cod:
-        _info_box("Matriz codificada detectada",
+        _info_box("Paso 3A: Matriz codificada detectada",
                   "Tu archivo ya viene en escala codificada (-1, 0, +1). "
-                  "Asigna los valores reales bajos/altos y sus unidades para guardarlos (se usaran en la ecuacion real, graficos y prediccion). "
-                  "El analisis factorial trabajara exclusivamente con la matriz codificada.",
+                  "Escribe los valores reales bajos/altos y sus unidades, y pulsa **💾 Guardar** para almacenarlos. "
+                  "Una vez guardados, en el Paso 3B se confirmara tu matriz codificada aislada para el analisis.",
                   tipo='info')
     else:
-        _info_box("Matriz NO codificada detectada",
-                  "Tu archivo tiene valores reales. Indica/confirma los valores bajo (-1), alto (+1) y sus unidades para generar la matriz codificada (-1, 0, +1), "
-                  "que sera la matriz utilizada para buscar puntos centrales y ejecutar el analisis.",
+        _info_box("Paso 3A: Matriz NO codificada detectada",
+                  "Tu archivo tiene valores reales. Confirma los valores bajo (-1), alto (+1) y sus unidades, y pulsa **💾 Guardar**. "
+                  "Despues de guardar, en el Paso 3B se generara la matriz codificada (-1, 0, +1) para el analisis.",
                   tipo='info')
-
-    mapeos_niveles = {}
-    mapeos_inversos = {}
-    unidades_factores = {}
 
     head_c1, head_c2 = st.columns([3, 1])
     with head_c1:
-        st.markdown("### Configurar niveles reales y unidades")
+        st.markdown("### 3A. Configurar y guardar niveles reales y unidades")
     with head_c2:
-        if st.button("🗑️ Borrar valores (volver al default)", use_container_width=True, help="Restablece los niveles bajos, altos y unidades a sus valores por defecto"):
+        if st.button("🗑️ Borrar valores (volver al default)", use_container_width=True,
+                     help="Restablece los niveles bajos, altos y unidades a sus valores por defecto"):
             _limpiar_niveles_y_widgets(factores)
             st.rerun()
 
-    for f in factores:
-        vals = sorted(pd.to_numeric(raw[f], errors='coerce').dropna().unique().tolist())
-        st.markdown(f"**Factor: {f}**")
+    # Formulario independiente para configurar y GUARDAR sin mezclar con el paso de la matriz codificada
+    with st.form("form_guardar_niveles"):
+        valores_form = {}
+        for f in factores:
+            vals = sorted(_to_numeric_clean(raw[f]).dropna().unique().tolist())
+            st.markdown(f"**Factor: {f}**")
 
-        if es_cod:
-            guardado = st.session_state.niveles_guardados.get(f, {'low': 0.0, 'high': 100.0, 'unit': ''})
-            c1, c2, c3 = st.columns([2, 2, 1.5])
-            v_bajo = c1.number_input(
-                f"Valor real para -1 (bajo) - {f}",
-                value=float(guardado.get('low', 0.0)),
-                format="%.4f",
-                key=f"real_low_{f}"
-            )
-            v_alto = c2.number_input(
-                f"Valor real para +1 (alto) - {f}",
-                value=float(guardado.get('high', 100.0)),
-                format="%.4f",
-                key=f"real_high_{f}"
-            )
-            unidad = c3.text_input(
-                f"Unidad - {f}",
-                value=str(guardado.get('unit', '')),
-                placeholder="ej: ppm, °C, min, %",
-                key=f"unit_{f}"
-            )
+            if es_cod:
+                guardado = st.session_state.niveles_guardados.get(f, {'low': 0.0, 'high': 100.0, 'unit': ''})
+                c1, c2, c3 = st.columns([2, 2, 1.5])
+                v_bajo = c1.number_input(
+                    f"Valor real para -1 (bajo) - {f}",
+                    value=float(guardado.get('low', 0.0)),
+                    format="%.4f",
+                    key=f"real_low_{f}"
+                )
+                v_alto = c2.number_input(
+                    f"Valor real para +1 (alto) - {f}",
+                    value=float(guardado.get('high', 100.0)),
+                    format="%.4f",
+                    key=f"real_high_{f}"
+                )
+                unidad = c3.text_input(
+                    f"Unidad - {f}",
+                    value=str(guardado.get('unit', '')),
+                    placeholder="ej: ppm, °C, min, %",
+                    key=f"unit_{f}"
+                )
+            else:
+                default_low = float(min(vals)) if len(vals) > 0 else 0.0
+                default_high = float(max(vals)) if len(vals) > 0 else 100.0
+                guardado = st.session_state.niveles_guardados.get(f, {'low': default_low, 'high': default_high, 'unit': ''})
+                c1, c2, c3 = st.columns([2, 2, 1.5])
+                v_bajo = c1.number_input(
+                    f"Nivel BAJO (-1) para {f}",
+                    value=float(guardado.get('low', default_low)),
+                    format="%.4f",
+                    key=f"low_{f}"
+                )
+                v_alto = c2.number_input(
+                    f"Nivel ALTO (+1) para {f}",
+                    value=float(guardado.get('high', default_high)),
+                    format="%.4f",
+                    key=f"high_{f}"
+                )
+                unidad = c3.text_input(
+                    f"Unidad - {f}",
+                    value=str(guardado.get('unit', '')),
+                    placeholder="ej: ppm, °C, min, %",
+                    key=f"unit_{f}"
+                )
+
+            valores_form[f] = (float(v_bajo), float(v_alto), str(unidad).strip())
+
+        guardar_btn = st.form_submit_button("💾 Guardar valores y preparar matriz", type='primary', use_container_width=True)
+
+    if guardar_btn:
+        error_rango = [f for f, (vb, va, _) in valores_form.items() if abs(va - vb) < 1e-12]
+        if error_rango:
+            st.error(f"El nivel bajo y el nivel alto no pueden ser iguales en: {', '.join(error_rango)}")
         else:
-            default_low = float(min(vals)) if len(vals) > 0 else 0.0
-            default_high = float(max(vals)) if len(vals) > 0 else 100.0
-            guardado = st.session_state.niveles_guardados.get(f, {'low': default_low, 'high': default_high, 'unit': ''})
-            c1, c2, c3 = st.columns([2, 2, 1.5])
-            v_bajo = c1.number_input(
-                f"Nivel BAJO (-1) para {f}",
-                value=float(guardado.get('low', default_low)),
-                format="%.4f",
-                key=f"low_{f}"
-            )
-            v_alto = c2.number_input(
-                f"Nivel ALTO (+1) para {f}",
-                value=float(guardado.get('high', default_high)),
-                format="%.4f",
-                key=f"high_{f}"
-            )
-            unidad = c3.text_input(
-                f"Unidad - {f}",
-                value=str(guardado.get('unit', '')),
-                placeholder="ej: ppm, °C, min, %",
-                key=f"unit_{f}"
-            )
+            mapeos_niveles = {}
+            mapeos_inversos = {}
+            unidades_factores = {}
 
-        st.session_state.niveles_guardados[f] = {
-            'low': float(v_bajo),
-            'high': float(v_alto),
-            'unit': unidad.strip()
-        }
-        v_medio = (v_bajo + v_alto) / 2.0
-        suf_u = f" {unidad.strip()}" if unidad.strip() else ""
-        st.caption(f"Centro (0) calculado: **{v_medio:.4f}{suf_u}**")
+            for f, (v_bajo, v_alto, u_txt) in valores_form.items():
+                v_medio = (v_bajo + v_alto) / 2.0
+                st.session_state.niveles_guardados[f] = {
+                    'low': float(v_bajo),
+                    'high': float(v_alto),
+                    'unit': u_txt
+                }
+                mapeos_niveles[f] = {v_bajo: -1, v_medio: 0, v_alto: 1}
+                mapeos_inversos[f] = {-1: v_bajo, 0: v_medio, 1: v_alto}
+                unidades_factores[f] = u_txt
 
-        mapeos_niveles[f] = {v_bajo: -1, v_medio: 0, v_alto: 1}
-        mapeos_inversos[f] = {-1: v_bajo, 0: v_medio, 1: v_alto}
-        unidades_factores[f] = unidad.strip()
+            st.session_state.mapeos_niveles = mapeos_niveles
+            st.session_state.mapeos_inversos = mapeos_inversos
+            st.session_state.unidades_factores = unidades_factores
 
-    st.session_state.mapeos_niveles = mapeos_niveles
-    st.session_state.mapeos_inversos = mapeos_inversos
-    st.session_state.unidades_factores = unidades_factores
+            # Generar y congelar df_cod (exclusiva para factorial) y df_real (para CCD y ecuaciones reales)
+            df_cod_nuevo = raw.copy()
+            df_real_nuevo = raw.copy()
 
-    # Generar matriz codificada (para factorial) y matriz real (para CCD)
-    df_cod = raw.copy()
-    df_real = raw.copy()
-    if es_cod:
-        for f in factores:
-            serie_cod = pd.to_numeric(raw[f], errors='coerce')
-            df_cod[f] = serie_cod
-            v_b = mapeos_inversos[f][-1]
-            v_a = mapeos_inversos[f][1]
-            v_m = (v_b + v_a) / 2.0
-            rango = (v_a - v_b) / 2.0
-            df_real[f] = serie_cod * rango + v_m if rango != 0 else serie_cod
-    else:
-        for f in factores:
-            df_cod[f] = _codificar_factor(raw[f], mapeos_inversos[f][-1], mapeos_inversos[f][1]).round(6)
-            df_real[f] = pd.to_numeric(raw[f], errors='coerce')
+            if es_cod:
+                for f in factores:
+                    serie_cod = _to_numeric_clean(raw[f])
+                    df_cod_nuevo[f] = serie_cod
+                    v_b = mapeos_inversos[f][-1]
+                    v_a = mapeos_inversos[f][1]
+                    v_m = (v_b + v_a) / 2.0
+                    rango = (v_a - v_b) / 2.0
+                    df_real_nuevo[f] = serie_cod * rango + v_m if rango != 0 else serie_cod
+            else:
+                for f in factores:
+                    df_cod_nuevo[f] = _codificar_factor(raw[f], mapeos_inversos[f][-1], mapeos_inversos[f][1]).round(6)
+                    df_real_nuevo[f] = _to_numeric_clean(raw[f])
 
+            for r_c in respuestas:
+                df_cod_nuevo[r_c] = _to_numeric_clean(raw[r_c])
+                df_real_nuevo[r_c] = _to_numeric_clean(raw[r_c])
+
+            st.session_state.df_cod = df_cod_nuevo
+            st.session_state.df_real = df_real_nuevo
+            st.session_state.df_work = df_cod_nuevo.copy()
+            st.session_state.niveles_confirmados_paso3 = True
+            st.rerun()
+
+    # ---------- PASO 3B (DESCONECTADO): MATRIZ CODIFICADA PARA EL ANALISIS ----------
     st.markdown("---")
-    st.markdown("### Matriz Codificada (-1, 0, +1) para el Analisis")
-    st.dataframe(df_cod[factores + [r for r in respuestas if r in df_cod.columns]], use_container_width=True)
-
-    # Tabla resumen de niveles guardados
-    resumen_niveles = pd.DataFrame([
-        {
-            'Factor': f,
-            'Nivel Bajo (-1)': mapeos_inversos[f][-1],
-            'Centro (0)': mapeos_inversos[f][0],
-            'Nivel Alto (+1)': mapeos_inversos[f][1],
-            'Unidad': unidades_factores[f] if unidades_factores[f] else '—'
-        }
-        for f in factores
-    ])
-    with st.expander("📋 Ver resumen de niveles reales y unidades guardadas"):
-        st.dataframe(resumen_niveles, use_container_width=True)
-
-    st.markdown("---")
-    nav_c = st.columns([1, 3])
-    with nav_c[0]:
-        if st.button("← Regresar a columnas", use_container_width=True):
-            st.session_state.df_cod = df_cod.copy()
-            st.session_state.df_real = df_real.copy()
+    if not st.session_state.get('niveles_confirmados_paso3') or st.session_state.df_cod is None:
+        _info_box("Paso 3B pendiente",
+                  "Pulsa **💾 Guardar valores y preparar matriz** arriba para guardar tus niveles reales/unidades "
+                  "y habilitar la matriz codificada para el analisis.",
+                  tipo='tip')
+        if st.button("← Regresar a columnas"):
             st.session_state.stage = 'preview'
             st.rerun()
-    with nav_c[1]:
-        if st.button("Continuar a puntos centrales y analisis →", type='primary', use_container_width=True):
-            st.session_state.df_cod = df_cod.copy()
-            st.session_state.df_real = df_real.copy()
-            st.session_state.df_work = df_cod.copy()
-            # Al entrar desde aqui, detectar centros frescos sobre la matriz codificada
-            st.session_state.centros_confirmados = False
-            st.session_state.filas_centro_idx = []
-            st.session_state.stage = 'analysis_select'
-            st.rerun()
+    else:
+        st.success("✅ Valores reales y unidades guardados. Paso 3B listo para el analisis.")
+
+        mapeos_inv = st.session_state.mapeos_inversos
+        unidades_factores = st.session_state.unidades_factores
+        resumen_niveles = pd.DataFrame([
+            {
+                'Factor': f,
+                'Nivel Bajo (-1)': mapeos_inv[f][-1],
+                'Centro (0)': mapeos_inv[f][0],
+                'Nivel Alto (+1)': mapeos_inv[f][1],
+                'Unidad': unidades_factores.get(f) or '—'
+            }
+            for f in factores
+        ])
+        with st.expander("📋 Ver resumen de niveles reales y unidades guardadas"):
+            st.dataframe(resumen_niveles, use_container_width=True)
+
+        df_cod_listo = st.session_state.df_cod
+        st.markdown("### 3B. Matriz Codificada (-1, 0, +1) seleccionada para el Analisis")
+        st.caption("Si cambias algun valor en el Paso 3A, recuerda pulsar nuevamente **💾 Guardar valores y preparar matriz**.")
+        st.dataframe(df_cod_listo[factores + respuestas], use_container_width=True)
+
+        st.markdown("---")
+        nav_c = st.columns([1, 3])
+        with nav_c[0]:
+            if st.button("← Regresar a columnas", use_container_width=True):
+                st.session_state.stage = 'preview'
+                st.rerun()
+        with nav_c[1]:
+            if st.button("Continuar a puntos centrales y analisis →", type='primary', use_container_width=True):
+                st.session_state.centros_confirmados = False
+                st.session_state.filas_centro_idx = []
+                st.session_state.stage = 'analysis_select'
+                st.rerun()
 
 
 # ---------- ETAPA 4: PUNTOS CENTRALES Y SELECCION DE ANALISIS ----------
@@ -581,12 +671,12 @@ elif st.session_state.stage == 'analysis_select':
 
     df_cod = st.session_state.df_cod if st.session_state.df_cod is not None else st.session_state.df_work
     factores = st.session_state.factores
-    respuestas = st.session_state.respuestas or [st.session_state.respuesta]
+    respuestas = st.session_state.respuestas if st.session_state.respuestas else ([st.session_state.respuesta] if st.session_state.respuesta else [])
     respuesta = respuestas[0]
     k = len(factores)
 
     _info_box("Paso 4: Deteccion sobre matriz codificada",
-              "Partiendo de tu matriz codificada (-1, 0, +1), el programa detecta los puntos centrales y sugiere el mejor analisis.",
+              "Partiendo de tu matriz codificada guardada, el programa detecta los puntos centrales y sugiere el mejor analisis.",
               tipo='info')
 
     # Busqueda de puntos centrales directamente sobre la matriz codificada
@@ -605,7 +695,7 @@ elif st.session_state.stage == 'analysis_select':
     with col1:
         st.metric("Factores", k)
     with col2:
-        st.metric("Esquinas / Axial", esq)
+        st.metric("Esquinas", esq)
     with col3:
         st.metric("Puntos centrales", n_centros_detect, delta="(filas con todos ~ 0)")
     with col4:
@@ -655,7 +745,6 @@ elif st.session_state.stage == 'analysis_select':
             st.session_state.centros_confirmados = True
             st.session_state.filas_centro_idx = []
 
-    # Cajita desplegable original: ¿Que son los puntos centrales?
     with st.expander("💡 ¿Que son los puntos centrales?"):
         st.markdown("""
         Los **puntos centrales** son corridas experimentales donde **todos los factores están en su valor intermedio** (nivel 0 en codificacion).
@@ -677,7 +766,6 @@ elif st.session_state.stage == 'analysis_select':
     st.markdown("---")
     st.markdown("### Tipo de analisis")
 
-    # Cajita desplegable original: Guia rapida
     with st.expander("📖 Guia rapida: ¿Cual elegir?", expanded=True):
         st.markdown("""
         | Si tu diseno tiene... | Elige... |
@@ -727,8 +815,8 @@ elif st.session_state.stage == 'analysis_select':
     }
     st.markdown(explicaciones.get(analisis, ""))
 
-    # Confirmacion de respuestas cuando es CCD (pre-cargadas desde Paso 2)
     resp_ccd = list(respuestas)
+    resp_fact_sel = list(respuestas)
     if analisis == 'ccd':
         raw_orig = st.session_state.raw
         cands_resp_ccd = [
@@ -736,18 +824,27 @@ elif st.session_state.stage == 'analysis_select':
             if c not in factores and c != st.session_state.get('corrida_col')
             and pd.api.types.is_numeric_dtype(raw_orig[c])
         ]
-        for r_prev in respuestas:
-            if r_prev not in cands_resp_ccd:
-                cands_resp_ccd.append(r_prev)
-        default_ccd = [r for r in respuestas if r in cands_resp_ccd] or cands_resp_ccd[:1]
+        for r_u in respuestas:
+            if r_u not in cands_resp_ccd:
+                cands_resp_ccd.insert(0, r_u)
         resp_ccd = st.multiselect(
-            "Respuestas para CCD (puedes analizar varias a la vez, ej. Tamano y Potencial Z):",
+            "Respuestas para CCD (puedes seleccionar 1 o varias para contorno combinado y optimizacion):",
             options=cands_resp_ccd,
-            default=default_ccd,
+            default=respuestas,
             key="sel_resp_ccd"
         )
+    elif len(respuestas) > 1:
+        modo_multi_fact = st.radio(
+            f"Seleccionaste {len(respuestas)} respuestas ({', '.join(respuestas)}). ¿Como usarlas en Factorial?",
+            ["Analizar una sola respuesta", "Unirlas como replicas de una misma respuesta"],
+            horizontal=True,
+            key="modo_multi_fact"
+        )
+        if modo_multi_fact == "Analizar una sola respuesta":
+            resp_unica = st.selectbox("Elige la respuesta a analizar:", respuestas, key="resp_fact_unica")
+            resp_fact_sel = [resp_unica]
 
-    # DISEÑO FRACCIONADO - GUIA INTERACTIVA (cajita desplegable original)
+    # DISEÑO FRACCIONADO - GUIA INTERACTIVA
     if analisis.startswith('factorial') and k >= 4:
         st.markdown("---")
         st.markdown("### 🔀 ¿Necesitas un diseño fraccionado?")
@@ -766,10 +863,6 @@ elif st.session_state.stage == 'analysis_select':
             | **p=3** (octavo) | 2^({k}-3) = 2^{k-3} | **{2**(k-3)}** | {k-2} | No recomendado. Mucha confusion. |
 
             **Regla de oro:** Usa **p=1** (media fraccion) a menos que tengas una buena razon para usar otra.
-
-            **Resolucion:** Indica que efectos pueden estar confundidos.
-            - **Resolucion V** o mas: Efectos principales e interacciones de 2 vias son libres de confusion.
-            - **Resolucion III**: Los principales pueden estar confundidos con interacciones de 2 vias.
             """)
 
         es_fracc = st.checkbox("Si, mi diseno es fraccionado", value=st.session_state.modelo_fraccionado)
@@ -812,9 +905,9 @@ elif st.session_state.stage == 'analysis_select':
                                    if st.session_state.df_real is not None
                                    else df_cod).copy()
                     for f in factores:
-                        df_base_ccd[f] = pd.to_numeric(df_base_ccd[f], errors='coerce')
+                        df_base_ccd[f] = _to_numeric_clean(df_base_ccd[f])
                     for r_c in resp_ccd:
-                        df_base_ccd[r_c] = pd.to_numeric(df_base_ccd[r_c], errors='coerce')
+                        df_base_ccd[r_c] = _to_numeric_clean(df_base_ccd[r_c])
                     st.session_state.df_ccd_raw = df_base_ccd
                     st.session_state.factores_ccd = list(factores)
                     st.session_state.respuesta_ccd = list(resp_ccd)
@@ -824,6 +917,8 @@ elif st.session_state.stage == 'analysis_select':
                     st.session_state.stage = 'ccd_full'
                     st.rerun()
             else:
+                st.session_state.respuestas_fact_activas = resp_fact_sel
+                st.session_state.respuesta = resp_fact_sel[0]
                 st.session_state.stage = 'results'
                 st.rerun()
 
@@ -832,10 +927,10 @@ elif st.session_state.stage == 'analysis_select':
 elif st.session_state.stage == 'results':
     st.title("5. Resultados del Analisis")
 
-    raw = st.session_state.df_cod if st.session_state.df_cod is not None else st.session_state.df_work
+    raw_cod = st.session_state.df_cod if st.session_state.df_cod is not None else st.session_state.df_work
     factores = st.session_state.factores
-    respuestas = st.session_state.respuestas or [st.session_state.respuesta]
-    respuesta = respuestas[0]
+    resp_activas = st.session_state.get('respuestas_fact_activas') or st.session_state.respuestas or [st.session_state.respuesta]
+    respuesta = resp_activas[0]
     analisis = st.session_state.analisis_tipo
     unidades = st.session_state.get('unidades_factores', {})
 
@@ -843,20 +938,17 @@ elif st.session_state.stage == 'results':
         st.session_state.stage = 'ccd_full'
         st.rerun()
 
-    if len(respuestas) > 1:
-        _info_box("Multiples columnas de respuesta en Factorial",
-                  f"Se combinaron **{', '.join(respuestas)}** como replicas de la respuesta. "
-                  "Si son variables diferentes (ej. Tamano y Potencial Z), vuelve a 'Cambiar analisis' y elige **CCD** o deja 1 respuesta.",
-                  tipo='info')
-        df = ce.preparar_datos(raw, factores, respuestas)
-        df['Curvatura'] = df[factores].apply(lambda r: 1 if all(abs(v) < 0.01 for v in r) else 0, axis=1)
+    # Asegurar que Factorial trabaje SIEMPRE sobre la matriz codificada (-1, 0, +1)
+    if len(resp_activas) > 1:
+        df = ce.preparar_datos(raw_cod, factores, resp_activas)
+        st.info(f"Analizando {len(resp_activas)} columnas como replicas: {', '.join(resp_activas)}")
     else:
-        df = raw.copy()
+        df = raw_cod.copy()
         df = df.rename(columns={respuesta: 'Y'})
         df['Grupo'] = 'G1'
         for f in factores:
-            df[f] = pd.to_numeric(df[f], errors='coerce')
-        df['Y'] = pd.to_numeric(df['Y'], errors='coerce')
+            df[f] = _to_numeric_clean(df[f])
+        df['Y'] = _to_numeric_clean(df['Y'])
 
         centros_idx = set(st.session_state.get('filas_centro_idx', []))
         if centros_idx:
@@ -891,6 +983,7 @@ elif st.session_state.stage == 'results':
               f"alpha = {alpha} significa que aceptamos un {alpha*100:.0f}% de probabilidad de equivocarnos al declarar un efecto significativo.",
               tipo='tip')
 
+    R = None
     try:
         if analisis == 'factorial_via1':
             if st.session_state.modo_seleccion == 'manual':
@@ -1009,11 +1102,9 @@ elif st.session_state.stage == 'results':
 
         # GRAFICOS
         st.markdown("---")
-        st.markdown("## Graficos Diagnostico y Superficies")
+        st.markdown("## Graficos Diagnostico")
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "Pareto", "Semi-normal", "Efectos Principales", "Interacciones", "Superficie 3D"
-        ])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Pareto", "Semi-normal", "Efectos Principales", "Interacciones", "Superficie 3D"])
 
         with tab1:
             try:
@@ -1044,7 +1135,7 @@ elif st.session_state.stage == 'results':
                 eje_x_sel = {}
 
                 if ints_modelo:
-                    st.markdown("**Elige qué factor quieres mostrar en el eje X de cada gráfica:**")
+                    st.markdown("**Elige que factor quieres mostrar en el eje X de cada grafica:**")
                     cols_ejex = st.columns(min(len(ints_modelo), 3))
                     for idx_int, inter in enumerate(ints_modelo):
                         fa, fb = inter.split('*')
@@ -1075,49 +1166,45 @@ elif st.session_state.stage == 'results':
                 st.warning(f"No se pudieron generar interacciones: {e}")
 
         with tab5:
-            try:
-                if R['via'] == ce.VIA_3:
-                    st.info("La superficie 3D esta disponible para disenos de Via 1 y Via 2.")
-                else:
-                    c_ax1, c_ax2, c_ax3 = st.columns([1, 1, 1.5])
-                    f1_3d = c_ax1.selectbox("Factor Eje X:", factores, index=0, key="f1_3d_fac")
+            if R['via'] == ce.VIA_3:
+                st.info("Los graficos de superficie 3D requieren Via 1 o Via 2.")
+            else:
+                try:
+                    c3d_1, c3d_2 = st.columns(2)
+                    f1_3d = c3d_1.selectbox("Factor en eje X (3D):", factores, index=0, key="fact_3d_x")
                     f2_opts_3d = [f for f in factores if f != f1_3d]
-                    f2_3d = c_ax2.selectbox("Factor Eje Y:", f2_opts_3d, index=0, key="f2_3d_fac")
-                    tipo_3d = c_ax3.radio(
-                        "Metodo:",
-                        ["Modelo Teorico (Ecuacion)", "Interpolacion de Datos (Estilo Minitab)"],
-                        horizontal=True,
-                        key="tipo_3d_fac"
-                    )
+                    f2_3d = c3d_2.selectbox("Factor en eje Y (3D):", f2_opts_3d, index=min(len(f2_opts_3d) - 1, 1), key="fact_3d_y")
 
-                    if "Modelo Teorico" in tipo_3d:
-                        fn_surf, x_opt, y_opt, z_opt = ce._gen_superficie_3d(
-                            R,
-                            resp_name=respuesta,
-                            f1=f1_3d,
-                            f2=f2_3d,
+                    sig_3d = inspect.signature(ce._gen_superficie_3d).parameters
+                    if 'f1' in sig_3d:
+                        fn_3d, _, _, _ = ce._gen_superficie_3d(
+                            R, resp_name=respuesta,
+                            f1=f1_3d, f2=f2_3d,
                             mapeos=st.session_state.mapeos_inversos,
                             unidades=unidades
                         )
-                        if fn_surf and os.path.exists(fn_surf):
-                            st.image(fn_surf, use_container_width=True)
-                            st.success(
-                                f"**Maximo en el plano ({f1_3d}, {f2_3d}):** "
-                                f"{respuesta} = **{z_opt:.4f}** en {f1_3d} = **{x_opt:.4f}**, {f2_3d} = **{y_opt:.4f}**."
-                            )
                     else:
+                        fn_3d, _, _, _ = ce._gen_superficie_3d(R, resp_name=respuesta)
+
+                    if fn_3d:
+                        st.markdown("#### Superficie 3D y Curvas de Nivel (Modelo)")
+                        st.image(fn_3d, use_container_width=True)
+
+                    sig_interp = inspect.signature(ce._gen_superficie_interpolada).parameters
+                    if 'mapeos' in sig_interp:
                         fn_interp = ce._gen_superficie_interpolada(
-                            df, R,
-                            f1=f1_3d,
-                            f2=f2_3d,
-                            resp_name=respuesta,
+                            df, R, f1=f1_3d, f2=f2_3d, resp_name=respuesta,
                             mapeos=st.session_state.mapeos_inversos,
                             unidades=unidades
                         )
-                        if fn_interp and os.path.exists(fn_interp):
-                            st.image(fn_interp, use_container_width=True)
-            except Exception as e:
-                st.warning(f"No se pudo generar la superficie 3D: {e}")
+                    else:
+                        fn_interp = ce._gen_superficie_interpolada(df, R, f1=f1_3d, f2=f2_3d, resp_name=respuesta)
+
+                    if fn_interp:
+                        st.markdown("#### Superficie 3D Interpolada (Datos Experimentales)")
+                        st.image(fn_interp, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"No se pudo generar la superficie 3D: {e}")
 
         # PREDICCION
         st.markdown("---")
@@ -1215,6 +1302,7 @@ elif st.session_state.stage == 'results':
             st.session_state.df_work = None
             st.session_state.df_cod = None
             st.session_state.df_real = None
+            st.session_state.niveles_confirmados_paso3 = False
             st.session_state.stage = 'upload'
             st.rerun()
 
@@ -1320,13 +1408,13 @@ elif st.session_state.stage == 'ccd_refine':
         if c1.button("← Volver a modelo completo", use_container_width=True):
             st.session_state.stage = 'ccd_full'
             st.rerun()
-        if c2.button("Ir a Superficies 3D, Contornos y Optimizacion →", type='primary', use_container_width=True):
+        if c2.button("Ir a Diagnosticos, 3D, contornos y optimizacion →", type='primary', use_container_width=True):
             st.session_state.stage = 'ccd_diag'
             st.rerun()
 
 
 elif st.session_state.stage == 'ccd_diag':
-    st.title("CCD - Residuales, Superficies 3D, Contornos y Optimizacion")
+    st.title("CCD - Diagnosticos, Superficie 3D, contornos y optimizacion")
     Rs = st.session_state.get('R_ccd')
     if not Rs:
         st.error("Primero debes refinar el modelo (paso anterior).")
@@ -1343,9 +1431,9 @@ elif st.session_state.stage == 'ccd_diag':
         st.image(fn, use_container_width=True)
 
     st.markdown("---")
-    st.markdown("### Superficies 3D y Contornos individuales")
-    st.caption("1) Define los ejes de cada grafica y los del combinado. "
-               "2) Pulsa **Aplicar configuracion**. 3) Activa o desactiva las casillas para mostrar los graficos.")
+    st.markdown("### Superficies 3D, Contornos individuales y combinado")
+    st.caption("1) Define los ejes de cada grafico y los del combinado. "
+               "2) Pulsa **Aplicar configuracion**. 3) Activa las casillas para mostrar los graficos.")
 
     with st.form("ccd_form_cfg"):
         st.markdown("**A. Ejes de las Superficies 3D y Contornos INDIVIDUALES** "
@@ -1412,9 +1500,9 @@ elif st.session_state.stage == 'ccd_diag':
             return None
         return {xi: punto.get(xi, fijos.get(xi)), yi: punto.get(yi, fijos.get(yi))}
 
-    chk_col1, chk_col2 = st.columns(2)
-    mostrar_3d = chk_col1.checkbox("Mostrar superficies 3D individuales", value=True, key='ccd_mostrar_3d')
-    mostrar_cont = chk_col2.checkbox("Mostrar contornos 2D individuales", value=True, key='ccd_mostrar_cont')
+    chk_c1, chk_c2 = st.columns(2)
+    mostrar_3d = chk_c1.checkbox("Mostrar superficies 3D individuales", value=True, key='ccd_mostrar_3d')
+    mostrar_cont = chk_c2.checkbox("Mostrar contornos 2D individuales", value=True, key='ccd_mostrar_cont')
 
     if mostrar_3d or mostrar_cont:
         for r, R in Rs.items():
@@ -1424,38 +1512,33 @@ elif st.session_state.stage == 'ccd_diag':
                          "Elige dos factores distintos en la seccion A y pulsa 'Aplicar configuracion'.")
                 continue
 
-            st.markdown(f"#### Respuesta: {r}")
-            if mostrar_3d and mostrar_cont:
-                g_c1, g_c2 = st.columns(2)
-            else:
-                g_c1 = st.container()
-                g_c2 = g_c1
-
-            if mostrar_3d:
-                fn_3d = ce_rsm.graf_superficie_3d_ccd(
-                    R, xi, yi, estilo=estilo_key, cmap=cmaps.get(r),
-                    xlabel=etiq_ccd[xi], ylabel=etiq_ccd[yi], zlabel=r,
-                    punto=_star_para(xi, yi), fijos=fijos
-                )
-                g_c1.image(fn_3d, use_container_width=True)
-
-            if mostrar_cont:
-                txt = niveles_txt.get(r, '').strip()
-                niv = None
-                if txt:
-                    try:
-                        niv = sorted(float(x) for x in txt.replace(';', ',').split(',') if x.strip())
-                        if len(niv) < 2:
-                            niv = None
-                    except ValueError:
+            txt = niveles_txt.get(r, '').strip()
+            niv = None
+            if txt:
+                try:
+                    niv = sorted(float(x) for x in txt.replace(';', ',').split(',') if x.strip())
+                    if len(niv) < 2:
                         niv = None
-                        st.warning(f"Niveles de {r} no validos; se usaran niveles automaticos.")
+                except ValueError:
+                    niv = None
+                    st.warning(f"Niveles de {r} no validos; se usaran niveles automaticos.")
+
+            gcols = st.columns(2 if (mostrar_3d and mostrar_cont) else 1)
+            col_idx = 0
+            if mostrar_3d and hasattr(ce_rsm, 'graf_superficie_3d_ccd'):
+                fn_3d_ccd = ce_rsm.graf_superficie_3d_ccd(
+                    R, xi, yi, cmap=cmaps.get(r) or 'viridis',
+                    xlabel=etiq_ccd[xi], ylabel=etiq_ccd[yi], fijos=fijos
+                )
+                gcols[col_idx].image(fn_3d_ccd, use_container_width=True)
+                col_idx += 1
+            if mostrar_cont:
                 fn_c = ce_rsm.graf_contorno_ccd(
                     R, xi, yi, estilo=estilo_key, cmap=cmaps.get(r),
                     xlabel=etiq_ccd[xi], ylabel=etiq_ccd[yi],
                     niveles=(niv if niv else None), punto=_star_para(xi, yi), fijos=fijos
                 )
-                g_c2.image(fn_c, use_container_width=True)
+                gcols[col_idx].image(fn_c, use_container_width=True)
 
     ejes_comb_ok = (f1 != f2) and (f2 in [f for f in facc if f != f1])
     if not ejes_comb_ok:
@@ -1578,5 +1661,6 @@ elif st.session_state.stage == 'ccd_diag':
             st.session_state.df_work = None
             st.session_state.df_cod = None
             st.session_state.df_real = None
+            st.session_state.niveles_confirmados_paso3 = False
             st.session_state.stage = 'upload'
             st.rerun()
