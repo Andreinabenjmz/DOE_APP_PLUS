@@ -1,14 +1,18 @@
 # app_plus.py
-# Interfaz Streamlit - Flujo completo redisenado
-# Cargar -> Confirmar columnas -> Niveles/Unidades + Codificar -> Puntos centrales y Analisis -> Resultados
+# Interfaz Streamlit - Flujo completo redisenado (Factorial 2^k + Rama CCD)
+# Cargar -> Confirmar columnas -> Niveles/Unidades + Codificar -> Puntos centrales y Analisis -> Resultados / CCD
 
-import streamlit as st
-import pandas as pd
-import numpy as np
+import importlib
 import os
+import numpy as np
+import pandas as pd
+import streamlit as st
 
 import calc_engine_plus as ce
 import calc_engine_rsm as ce_rsm
+
+importlib.reload(ce)
+importlib.reload(ce_rsm)
 
 st.set_page_config(
     page_title="DOE Tool - Analisis Factorial y RSM",
@@ -23,6 +27,7 @@ def _init_state():
         'raw': None,
         'df_work': None,
         'df_cod': None,
+        'df_real': None,
         'factores': [],
         'respuesta': None,
         'corrida_col': None,
@@ -38,6 +43,12 @@ def _init_state():
         'resolucion': None,
         'R': None,
         'R_rsm': None,
+        'df_ccd_raw': None,
+        'factores_ccd': [],
+        'respuesta_ccd': [],
+        'R_ccd_full': None,
+        'R_ccd': None,
+        'opt_ccd': None,
         'nombre': '',
         'estudiante': '',
         'curso': '',
@@ -176,30 +187,12 @@ def _validar_analisis_vs_diseno(df_cod, factores, respuesta, analisis):
             msgs.append(f"Via 3 es para disenos NO replicados SIN centros. Detectados: {centros} centros.")
         if replicas > 0:
             msgs.append(f"Via 3 no usa replicas. Detectadas: {replicas} replicas.")
-    
+
     elif analisis == 'ccd':
-        R_rsm = st.session_state.R_rsm
-        st.markdown("## Resultados CCD (Superficie de Respuesta)")
-        if R_rsm:
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("S (Error estandar)", f"{np.sqrt(R_rsm['model'].mse_resid):.6f}")
-            c2.metric("R2", f"{R_rsm['R2']*100:.2f}%")
-            c3.metric("R2 ajustado", f"{R_rsm['R2_adj']*100:.2f}%")
-            c4.metric("Terminos en modelo", len(R_rsm['terms']))
+        if k < 2 or k > 5:
+            msgs.append(f"CCD tipicamente usa 2-5 factores. Detectados: {k}.")
 
-            st.markdown("### Tabla ANOVA (CCD)")
-            st.dataframe(R_rsm['anova'], use_container_width=True)
-
-            if R_rsm.get('lof'):
-                st.markdown("### Prueba de Falta de Ajuste (Lack-of-Fit)")
-                st.write(R_rsm['lof'])
-
-            st.markdown("### Ecuacion de Regresion (Codificada)")
-            st.code(R_rsm['eq_coded'], language='text')
-
-            st.markdown("### Graficos de Residuales")
-            fn_res = ce_rsm.graf_residuales_ccd(R_rsm)
-            st.image(fn_res)
+    return msgs
 
 
 def _sugerir_analisis(df_cod, factores, respuesta):
@@ -270,23 +263,32 @@ with st.sidebar:
     if st.session_state.raw is not None:
         st.markdown("---")
         st.markdown("### Progreso")
-        stages = {
-            'upload': '1. Cargar archivo',
-            'preview': '2. Confirmar columnas',
-            'encode': '3. Niveles, unidades y codificacion',
-            'analysis_select': '4. Puntos centrales y analisis',
-            'results': '5. Resultados'
-        }
         current = st.session_state.stage
-        for stage_key, stage_label in stages.items():
-            idx = list(stages.keys()).index(stage_key)
+        if current.startswith('ccd_'):
+            stages = {
+                'ccd_full': '1. CCD: Modelo completo',
+                'ccd_refine': '2. CCD: Refinar modelo',
+                'ccd_diag': '3. CCD: Contornos y Opt.'
+            }
+        else:
+            stages = {
+                'upload': '1. Cargar archivo',
+                'preview': '2. Confirmar columnas',
+                'encode': '3. Niveles, unidades y codificacion',
+                'analysis_select': '4. Puntos centrales y analisis',
+                'results': '5. Resultados'
+            }
+
+        if current in stages:
             curr_idx = list(stages.keys()).index(current)
-            if stage_key == current:
-                st.markdown(f"<div style='background:#e3f2fd;padding:6px 10px;border-radius:6px;margin:2px 0;font-weight:bold;'>→ {stage_label}</div>", unsafe_allow_html=True)
-            elif idx < curr_idx:
-                st.markdown(f"<div style='color:#4caf50;padding:2px 0;'>✅ {stage_label}</div>", unsafe_allow_html=True)
-            else:
-                st.markdown(f"<div style='color:#9e9e9e;padding:2px 0;'>⬜ {stage_label}</div>", unsafe_allow_html=True)
+            for stage_key, stage_label in stages.items():
+                idx = list(stages.keys()).index(stage_key)
+                if stage_key == current:
+                    st.markdown(f"<div style='background:#e3f2fd;padding:6px 10px;border-radius:6px;margin:2px 0;font-weight:bold;'>→ {stage_label}</div>", unsafe_allow_html=True)
+                elif idx < curr_idx:
+                    st.markdown(f"<div style='color:#4caf50;padding:2px 0;'>✅ {stage_label}</div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div style='color:#9e9e9e;padding:2px 0;'>⬜ {stage_label}</div>", unsafe_allow_html=True)
         st.markdown("---")
 
     st.markdown("### Generar datos")
@@ -331,6 +333,7 @@ if st.session_state.stage == 'upload':
             raw.columns = raw.columns.astype(str).str.strip()
             st.session_state.raw = raw
             st.session_state.df_cod = None
+            st.session_state.df_real = None
             st.session_state.df_work = None
             st.session_state.filas_centro_idx = []
             st.session_state.centros_confirmados = False
@@ -382,8 +385,8 @@ elif st.session_state.stage == 'preview':
     default_resp = st.session_state.respuesta if st.session_state.respuesta in raw.columns else (resp_cands[0] if resp_cands else raw.columns[0])
     st.markdown("### Respuesta")
     respuesta = st.selectbox("Selecciona la respuesta:", raw.columns.tolist(),
-                              index=raw.columns.tolist().index(default_resp),
-                              key="sel_respuesta")
+                             index=raw.columns.tolist().index(default_resp),
+                             key="sel_respuesta")
 
     if len(factores) < 2:
         st.warning("Selecciona al menos 2 factores.")
@@ -516,14 +519,22 @@ elif st.session_state.stage == 'encode':
     st.session_state.mapeos_inversos = mapeos_inversos
     st.session_state.unidades_factores = unidades_factores
 
-    # Generar matriz codificada (unica matriz con la que se trabaja)
+    # Generar matriz codificada (para factorial) y matriz real (para CCD)
     df_cod = raw.copy()
+    df_real = raw.copy()
     if es_cod:
         for f in factores:
-            df_cod[f] = pd.to_numeric(raw[f], errors='coerce')
+            serie_cod = pd.to_numeric(raw[f], errors='coerce')
+            df_cod[f] = serie_cod
+            v_b = mapeos_inversos[f][-1]
+            v_a = mapeos_inversos[f][1]
+            v_m = (v_b + v_a) / 2.0
+            rango = (v_a - v_b) / 2.0
+            df_real[f] = serie_cod * rango + v_m if rango != 0 else serie_cod
     else:
         for f in factores:
             df_cod[f] = _codificar_factor(raw[f], mapeos_inversos[f][-1], mapeos_inversos[f][1]).round(6)
+            df_real[f] = pd.to_numeric(raw[f], errors='coerce')
 
     st.markdown("---")
     st.markdown("### Matriz Codificada (-1, 0, +1) para el Analisis")
@@ -548,11 +559,13 @@ elif st.session_state.stage == 'encode':
     with nav_c[0]:
         if st.button("← Regresar a columnas", use_container_width=True):
             st.session_state.df_cod = df_cod.copy()
+            st.session_state.df_real = df_real.copy()
             st.session_state.stage = 'preview'
             st.rerun()
     with nav_c[1]:
         if st.button("Continuar a puntos centrales y analisis →", type='primary', use_container_width=True):
             st.session_state.df_cod = df_cod.copy()
+            st.session_state.df_real = df_real.copy()
             st.session_state.df_work = df_cod.copy()
             # Al entrar desde aqui, detectar centros frescos sobre la matriz codificada
             st.session_state.centros_confirmados = False
@@ -708,9 +721,27 @@ elif st.session_state.stage == 'analysis_select':
         'factorial_via1': "**Via 1:** Analisis para disenos con **replicas completas**. Cada condicion experimental se repite varias veces.",
         'factorial_via2': f"**Via 2:** Analisis para disenos con **puntos centrales** ({centros} detectados en tu archivo). Permite probar curvatura.",
         'factorial_via3': "**Via 3:** Analisis para disenos **sin replicas ni centros**. Usa el metodo de Lenth para detectar efectos significativos.",
-        'ccd': "**CCD:** Analisis de Superficie de Respuesta. Requiere puntos axiales (±α) ademas de esquinas y centros.",
+        'ccd': "**CCD:** Analisis de Superficie de Respuesta. Permite ajustar terminos cuadraticos (A²), contornos individuales, contorno combinado y optimizacion multi-respuesta.",
     }
     st.markdown(explicaciones.get(analisis, ""))
+
+    # Selector de 1 o multiples respuestas EXCLUSIVO para CCD
+    resp_ccd = [respuesta]
+    if analisis == 'ccd':
+        raw_orig = st.session_state.raw
+        cands_resp_ccd = [
+            c for c in raw_orig.columns
+            if c not in factores and c != st.session_state.get('corrida_col')
+            and pd.api.types.is_numeric_dtype(raw_orig[c])
+        ]
+        if respuesta not in cands_resp_ccd:
+            cands_resp_ccd = [respuesta] + cands_resp_ccd
+        resp_ccd = st.multiselect(
+            "Respuestas para CCD (puedes seleccionar 1 o varias para contorno combinado y optimizacion):",
+            options=cands_resp_ccd,
+            default=[respuesta],
+            key="sel_resp_ccd"
+        )
 
     # DISEÑO FRACCIONADO - GUIA INTERACTIVA (cajita desplegable original)
     if analisis.startswith('factorial') and k >= 4:
@@ -769,12 +800,31 @@ elif st.session_state.stage == 'analysis_select':
         if st.button("Continuar al analisis →", type='primary', use_container_width=True):
             if warnings and any("requiere" in w.lower() for w in warnings):
                 st.error("Corrige las advertencias antes de continuar, o elige un analisis diferente.")
+            elif analisis == 'ccd':
+                if not resp_ccd:
+                    st.error("Selecciona al menos una respuesta para CCD.")
+                else:
+                    df_base_ccd = (st.session_state.df_real
+                                   if st.session_state.df_real is not None
+                                   else df_cod).copy()
+                    for f in factores:
+                        df_base_ccd[f] = pd.to_numeric(df_base_ccd[f], errors='coerce')
+                    for r_c in resp_ccd:
+                        df_base_ccd[r_c] = pd.to_numeric(df_base_ccd[r_c], errors='coerce')
+                    st.session_state.df_ccd_raw = df_base_ccd
+                    st.session_state.factores_ccd = list(factores)
+                    st.session_state.respuesta_ccd = list(resp_ccd)
+                    st.session_state.R_ccd_full = None
+                    st.session_state.R_ccd = None
+                    st.session_state.opt_ccd = None
+                    st.session_state.stage = 'ccd_full'
+                    st.rerun()
             else:
                 st.session_state.stage = 'results'
                 st.rerun()
 
 
-# ---------- ETAPA 5: RESULTADOS ----------
+# ---------- ETAPA 5: RESULTADOS (SOLO FACTORIAL VIAS 1, 2 Y 3) ----------
 elif st.session_state.stage == 'results':
     st.title("5. Resultados del Analisis")
 
@@ -783,6 +833,10 @@ elif st.session_state.stage == 'results':
     respuesta = st.session_state.respuesta
     analisis = st.session_state.analisis_tipo
     unidades = st.session_state.get('unidades_factores', {})
+
+    if analisis == 'ccd':
+        st.session_state.stage = 'ccd_full'
+        st.rerun()
 
     df = raw.copy()
     df = df.rename(columns={respuesta: 'Y'})
@@ -864,13 +918,7 @@ elif st.session_state.stage == 'results':
         elif analisis == 'factorial_via3':
             R = ce.calcular_via3(df, factores)
 
-        elif analisis == 'ccd':
-            R_rsm = ce_rsm.ajustar_ccd(df, factores, 'Y')
-            st.session_state.R_rsm = R_rsm
-            R = None
-
-        if analisis != 'ccd':
-            st.session_state.R = R
+        st.session_state.R = R
 
     except Exception as e:
         st.error(f"Error en el analisis: {e}")
@@ -878,8 +926,7 @@ elif st.session_state.stage == 'results':
         st.code(traceback.format_exc())
         st.stop()
 
-    # MOSTRAR RESULTADOS
-    if analisis != 'ccd' and R is not None:
+    if R is not None:
         st.markdown("---")
         st.markdown("## Resumen del Modelo")
 
@@ -975,7 +1022,6 @@ elif st.session_state.stage == 'results':
                 st.image(fn)
             except Exception as e:
                 st.warning(f"No se pudieron generar efectos principales: {e}")
-                
 
         with tab4:
             try:
@@ -995,13 +1041,10 @@ elif st.session_state.stage == 'results':
                             key=f"ejex_{inter}"
                         )
 
-                niv_g = st.session_state.get('niveles_guardados', {})
-                unidades_int = {f: niv_g.get(f, {}).get('unidad', '') for f in factores}
-
                 fig_list = ce._gen_interactions(
                     R,
                     mapeos=st.session_state.mapeos_inversos,
-                    unidades=unidades_int,
+                    unidades=unidades,
                     eje_x_por_interaccion=eje_x_sel
                 )
                 if not fig_list:
@@ -1015,7 +1058,6 @@ elif st.session_state.stage == 'results':
                           tipo='tip')
             except Exception as e:
                 st.warning(f"No se pudieron generar interacciones: {e}")
-                
 
         # PREDICCION
         st.markdown("---")
@@ -1074,13 +1116,6 @@ elif st.session_state.stage == 'results':
             except Exception as e:
                 st.warning(f"No se pudo generar alias: {e}")
 
-    elif analisis == 'ccd':
-        R_rsm = st.session_state.R_rsm
-        st.markdown("## Resultados CCD")
-        st.markdown("El analisis de Superficie de Respuesta (CCD) ajusta un modelo cuadratico completo.")
-        if R_rsm:
-            st.json(R_rsm)
-
     # PANEL DE NAVEGACION FINAL
     st.markdown("---")
     st.markdown("## Navegacion")
@@ -1119,5 +1154,350 @@ elif st.session_state.stage == 'results':
             st.session_state.raw = None
             st.session_state.df_work = None
             st.session_state.df_cod = None
+            st.session_state.df_real = None
+            st.session_state.stage = 'upload'
+            st.rerun()
+
+
+# ==================== RAMA CCD (LIMITADA EXCLUSIVAMENTE A VIA CCD) ====================
+elif st.session_state.stage == 'ccd_full':
+    st.title("Superficie de Respuesta (CCD) - Modelo completo")
+    rawc = st.session_state.df_ccd_raw
+    facc = st.session_state.factores_ccd
+    respc = st.session_state.respuesta_ccd
+
+    _info_box("Ruta CCD (Superficie de Respuesta)",
+              f"Diseno CCD con **{len(rawc)} corridas** | Factores: **{', '.join(facc)}** | Respuesta(s): **{', '.join(respc)}**. "
+              "Se ajustara un modelo cuadratico completo (lineales + cuadrados A² + interacciones 2 a 2).",
+              tipo='info')
+
+    st.dataframe(rawc[facc + respc], use_container_width=True)
+
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        if st.button("← Cambiar tipo de analisis", use_container_width=True):
+            st.session_state.stage = 'analysis_select'
+            st.rerun()
+    with c2:
+        if st.button("Ajustar modelos completos →", type='primary', use_container_width=True):
+            try:
+                Rs = {}
+                for r in respc:
+                    Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False)
+                st.session_state.R_ccd_full = Rs
+                st.session_state.R_ccd = None
+                st.session_state.stage = 'ccd_refine'
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al ajustar CCD: {e}")
+
+
+elif st.session_state.stage == 'ccd_refine':
+    st.title("CCD - Refinar modelo (eliminacion hacia atras)")
+    rawc = st.session_state.df_ccd_raw
+    facc = st.session_state.factores_ccd
+    respc = st.session_state.respuesta_ccd
+    unidades_ccd = st.session_state.get('unidades_factores', {})
+
+    _info_box("Eliminacion hacia atras (Backward)",
+              "Puedes aplicar eliminacion automatica (respetando jerarquia: no quita un principal si participa en una interaccion activa) "
+              "o trabajar con el modelo cuadratico completo.",
+              tipo='tip')
+
+    alfa = st.number_input("Alfa para eliminacion (p > alfa se elimina)", 0.01, 0.20, 0.05, 0.01, key="ccd_alfa")
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Aplicar eliminacion hacia atras", type='primary', use_container_width=True):
+            with st.spinner("Ajustando..."):
+                Rs = {}
+                for r in respc:
+                    Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, alpha_elim=alfa, eliminar=True)
+                st.session_state.R_ccd = Rs
+    with b2:
+        if st.button("Usar modelo completo (sin eliminar)", use_container_width=True):
+            if st.session_state.R_ccd_full:
+                st.session_state.R_ccd = st.session_state.R_ccd_full
+            else:
+                Rs = {}
+                for r in respc:
+                    Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False)
+                st.session_state.R_ccd = Rs
+
+    Rs = st.session_state.get('R_ccd') or st.session_state.get('R_ccd_full')
+    if Rs:
+        st.session_state.R_ccd = Rs
+        for r, R in Rs.items():
+            st.markdown("---")
+            st.markdown(f"### Respuesta: {r}")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("S (Error estandar)", f"{np.sqrt(R['model'].mse_resid):.6f}")
+            c2.metric("R2", f"{R['R2']*100:.2f}%")
+            c3.metric("R2 ajustado", f"{R['R2_adj']*100:.2f}%")
+            c4.metric("Terminos", len(R['terms']))
+
+            st.dataframe(R['anova'].round(4), use_container_width=True)
+
+            if R['lof']:
+                ok_lof = R['lof']['p'] > 0.05
+                st.write(
+                    f"**Falta de ajuste:** F = {R['lof']['F']:.3f}, p = {R['lof']['p']:.4f} "
+                    + ("-> no significativa (buena)" if ok_lof else "-> SIGNIFICATIVA (revisar modelo)")
+                )
+            else:
+                st.caption("Sin replicas: no se puede calcular la falta de ajuste.")
+
+            st.markdown("**Ecuacion (unidades codificadas):**")
+            st.code(R['eq_coded'], language=None)
+            st.markdown("**Ecuacion (unidades reales):**")
+            st.code(R['eq_uncoded'], language=None)
+            if any(unidades_ccd.get(f) for f in facc):
+                u_txt = " | ".join(f"{f}: {unidades_ccd[f]}" for f in facc if unidades_ccd.get(f))
+                st.caption(f"Unidades guardadas -> {u_txt}")
+
+        st.markdown("---")
+        c1, c2 = st.columns(2)
+        if c1.button("← Volver a modelo completo", use_container_width=True):
+            st.session_state.stage = 'ccd_full'
+            st.rerun()
+        if c2.button("Ir a Diagnosticos, contornos y optimizacion →", type='primary', use_container_width=True):
+            st.session_state.stage = 'ccd_diag'
+            st.rerun()
+
+
+elif st.session_state.stage == 'ccd_diag':
+    st.title("CCD - Diagnosticos, contornos y optimizacion")
+    Rs = st.session_state.get('R_ccd')
+    if not Rs:
+        st.error("Primero debes refinar el modelo (paso anterior).")
+        st.stop()
+
+    respc = list(Rs.keys())
+    facc = Rs[respc[0]]['factores']
+    unidades_ccd = st.session_state.get('unidades_factores', {})
+    etiq_ccd = {f: f"{f} ({unidades_ccd[f]})" if unidades_ccd.get(f) else f for f in facc}
+
+    for r, R in Rs.items():
+        st.markdown(f"### Residuales - {r}")
+        fn = ce_rsm.graf_residuales_ccd(R)
+        st.image(fn, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### Contornos individuales y combinado")
+    st.caption("1) Define los ejes de cada contorno y los del combinado. "
+               "2) Pulsa **Aplicar configuracion**. 3) Activa las casillas para mostrar los graficos.")
+
+    with st.form("ccd_form_cfg"):
+        st.markdown("**A. Ejes de los contornos INDIVIDUALES** "
+                    "(el/los factor(es) restante(s) queda(n) fijo(s)):")
+        ejes_ind = {}
+        for r in respc:
+            cx, cy = st.columns(2)
+            xi = cx.selectbox(f"Eje X - {r}", facc, index=0, key=f"xi_{r}")
+            yi_opts = [f for f in facc if f != xi]
+            yi = cy.selectbox(f"Eje Y - {r}", yi_opts, index=len(yi_opts) - 1, key=f"yi_{r}")
+            ejes_ind[r] = (xi, yi)
+
+        st.markdown("**B. Contorno COMBINADO** (elige los DOS factores de los ejes):")
+        c1f, c2f = st.columns(2)
+        f1 = c1f.selectbox("Eje X del combinado", facc, index=0, key="ccd_comb_x")
+        f2_opts = [f for f in facc if f != f1]
+        f2 = c2f.selectbox("Eje Y del combinado", f2_opts, index=len(f2_opts) - 1, key="ccd_comb_y")
+        fijo_sel = [f for f in facc if f not in (f1, f2)]
+        if len(fijo_sel) == 1:
+            st.caption(f"Combinado: varian X = **{etiq_ccd[f1]}** e Y = **{etiq_ccd[f2]}**; queda fijo **{etiq_ccd[fijo_sel[0]]}**.")
+        elif len(fijo_sel) > 1:
+            st.caption(f"Combinado: varian X = **{etiq_ccd[f1]}** e Y = **{etiq_ccd[f2]}**; quedan fijos: {', '.join(etiq_ccd[x] for x in fijo_sel)}.")
+
+        st.markdown("**C. Valores de los factores cuando estan FIJOS:**")
+        fcols = st.columns(len(facc))
+        fijos = {}
+        for i, f in enumerate(facc):
+            codf = Rs[respc[0]]['coding'][f]
+            paso = max(codf['half'] / 10, 1e-6)
+            with fcols[i]:
+                fijos[f] = st.number_input(etiq_ccd[f], value=float(codf['c']),
+                                           step=paso, format="%.6g", key=f"fijo_{f}")
+        for f in facc:
+            usado = any(f in t.split('*') for R in Rs.values() for t in R['terms'])
+            if usado:
+                st.info(f"'{etiq_ccd[f]}' esta en el modelo reducido: si algun grafico lo fija, ese valor SI afecta ese grafico.")
+            else:
+                st.caption(f"'{etiq_ccd[f]}' fue eliminado del modelo como no significativo: fijarlo no afecta los resultados.")
+
+        estilo = st.radio("Estetica del grafico",
+                          ["Clasico (estilo articulo)", "Moderno (viridis)"],
+                          horizontal=True)
+        cmaps, niveles_txt = {}, {}
+        for r in respc:
+            cmaps[r] = st.selectbox(f"Colormap para {r}",
+                                    ["terrain", "RdYlGn", "jet", "viridis"],
+                                    index=0, key=f"cmap_{r}")
+            niveles_txt[r] = st.text_input(
+                f"Niveles de contorno para {r} (opcional, separados por comas)",
+                value="", key=f"niv_{r}",
+                placeholder="ej: 0,25,50,75,100,125,150,175,200,240")
+        st.form_submit_button("Aplicar configuracion", type='primary')
+
+    estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
+
+    punto = {
+        f1: float(st.session_state.get(f"pv_{f1}", Rs[respc[0]]['coding'][f1]['c'])),
+        f2: float(st.session_state.get(f"pv_{f2}", Rs[respc[0]]['coding'][f2]['c']))
+    }
+    mostrar_estrella = bool(st.session_state.get('ccd_mostrar_punto', True))
+
+    def _star_para(xi, yi):
+        if not mostrar_estrella:
+            return None
+        return {xi: punto.get(xi, fijos.get(xi)), yi: punto.get(yi, fijos.get(yi))}
+
+    # ---- Contornos individuales ----
+    mostrar_cont = st.checkbox("Mostrar contornos individuales", key='ccd_mostrar_cont')
+    if mostrar_cont:
+        for r, R in Rs.items():
+            xi, yi = ejes_ind[r]
+            if xi == yi:
+                st.error(f"Contorno de {r}: el eje X y el Y son el mismo factor ('{xi}'). "
+                         "Elige dos factores distintos en la seccion A y pulsa 'Aplicar configuracion'.")
+                continue
+            txt = niveles_txt.get(r, '').strip()
+            niv = None
+            if txt:
+                try:
+                    niv = sorted(float(x) for x in txt.replace(';', ',').split(',') if x.strip())
+                    if len(niv) < 2:
+                        niv = None
+                except ValueError:
+                    niv = None
+                    st.warning(f"Niveles de {r} no validos; se usaran niveles automaticos.")
+            fn_c = ce_rsm.graf_contorno_ccd(
+                R, xi, yi, estilo=estilo_key, cmap=cmaps.get(r),
+                xlabel=etiq_ccd[xi], ylabel=etiq_ccd[yi],
+                niveles=(niv if niv else None), punto=_star_para(xi, yi), fijos=fijos
+            )
+            st.image(fn_c, use_container_width=True)
+
+    ejes_comb_ok = (f1 != f2) and (f2 in [f for f in facc if f != f1])
+    if not ejes_comb_ok:
+        st.error(f"Los ejes del combinado (X = {f1}, Y = {f2}) no son validos. "
+                 "Revisa la seccion B y pulsa 'Aplicar configuracion'.")
+
+    # ---- Contorno combinado ----
+    st.markdown("---")
+    st.markdown("### Contorno combinado (region de interes)")
+    st.caption("Define los rangos aceptables de cada respuesta y pulsa **Aplicar metas**.")
+    rawc = st.session_state.df_ccd_raw
+    with st.form("ccd_form_metas"):
+        rangos = {}
+        cc1, cc2 = st.columns(2)
+        for i, r in enumerate(respc):
+            rmin = float(rawc[r].min())
+            rmax = float(rawc[r].max())
+            paso = max((rmax - rmin) / 20, 1e-6)
+            with (cc1 if i % 2 == 0 else cc2):
+                lo = st.number_input(f"{r} - minimo aceptable", value=rmin,
+                                     step=paso, format="%.6g", key=f"lo_{r}")
+                hi = st.number_input(f"{r} - maximo aceptable", value=rmax,
+                                     step=paso, format="%.6g", key=f"hi_{r}")
+            rangos[r] = (lo, hi)
+        st.form_submit_button("Aplicar metas", type='primary')
+
+    mostrar_comb = st.checkbox("Mostrar contorno combinado", key='ccd_mostrar_comb')
+    if mostrar_comb and ejes_comb_ok:
+        fn_sup = ce_rsm.graf_superposicion_ccd(
+            list(Rs.values()), rangos, f1, f2,
+            xlabel=etiq_ccd[f1], ylabel=etiq_ccd[f2],
+            punto=_star_para(f1, f2), fijos=fijos
+        )
+        st.image(fn_sup, use_container_width=True)
+
+    # ---- Probar un punto ----
+    st.markdown("---")
+    st.markdown("### Probar un punto (opcional)")
+    st.caption(f"Escribe los valores de **{etiq_ccd[f1]}** y **{etiq_ccd[f2]}** en unidades reales y pulsa **Aplicar punto**. "
+               "La estrella se dibuja en los graficos de arriba y los factores fijos usan los valores de la seccion C.")
+    with st.form("ccd_form_punto"):
+        pcols = st.columns(2)
+        for i, f in enumerate([f1, f2]):
+            c_def = Rs[respc[0]]['coding'][f]['c']
+            with pcols[i]:
+                st.number_input(f"{etiq_ccd[f]} (unidades reales)", value=float(c_def),
+                                step=0.05, format="%.6g", key=f"pv_{f}")
+        st.form_submit_button("Aplicar punto")
+
+    punto_vivo = {
+        f1: float(st.session_state.get(f"pv_{f1}", Rs[respc[0]]['coding'][f1]['c'])),
+        f2: float(st.session_state.get(f"pv_{f2}", Rs[respc[0]]['coding'][f2]['c']))
+    }
+    mcols = st.columns(len(respc))
+    for i, (r, R) in enumerate(Rs.items()):
+        pfull = {f: fijos.get(f, R['coding'][f]['c']) for f in R['factores']}
+        pfull.update(punto_vivo)
+        with mcols[i]:
+            st.metric(f"Prediccion de {r} en el punto", f"{ce_rsm.predecir_ccd(R, pfull):.3f}")
+    st.checkbox("Mostrar estrella en los graficos", value=True, key='ccd_mostrar_punto')
+
+    # ---- Optimizacion ----
+    st.markdown("---")
+    st.markdown("### Optimizacion (deseabilidad)")
+    st.caption("Configura los objetivos y pulsa **Aplicar objetivos**; luego usa **Optimizar ahora**.")
+    with st.form("ccd_form_obj"):
+        objetivos = {}
+        for r in respc:
+            rlo, rhi = rangos[r]
+            paso = max((rhi - rlo) / 20, 1e-6)
+            tipo = st.selectbox(f"Objetivo de {r}", ["max", "min", "target"],
+                                format_func=lambda t: {"max": "Maximizar", "min": "Minimizar", "target": "Apuntar a un target"}[t],
+                                key=f"obj_{r}")
+            o = {'tipo': tipo, 'lo': rlo, 'hi': rhi}
+            if tipo == 'target':
+                o['target'] = st.number_input(f"Target de {r}",
+                                              value=float((rlo + rhi) / 2),
+                                              step=paso, format="%.6g", key=f"tgt_{r}")
+            objetivos[r] = o
+        st.form_submit_button("Aplicar objetivos", type='primary')
+
+    if st.button("Optimizar ahora"):
+        opt = ce_rsm.optimizar_ccd(list(Rs.values()), objetivos)
+        st.session_state.opt_ccd = opt if opt is not None else 'SIN_SOLUCION'
+    opt = st.session_state.get('opt_ccd')
+    if opt == 'SIN_SOLUCION':
+        st.warning("No existe ningun punto que cumpla todas las metas a la vez.")
+    elif opt:
+        punto_txt = " | ".join(
+            f"{f} = {v:.4f}" + (f" {unidades_ccd[f]}" if unidades_ccd.get(f) else "")
+            for f, v in opt['punto'].items()
+        )
+        pred_txt = " | ".join(f"{k} = {v:.4f}" for k, v in opt['predicciones'].items())
+        st.success(f"**Mejor punto (deseabilidad = {opt['deseabilidad']:.3f}):** {punto_txt}  →  {pred_txt}")
+
+    # ---- Navegacion final CCD ----
+    st.markdown("---")
+    nav_ccd = st.columns(4)
+    with nav_ccd[0]:
+        if st.button("← Volver a Refinar CCD", use_container_width=True):
+            st.session_state.stage = 'ccd_refine'
+            st.rerun()
+    with nav_ccd[1]:
+        if st.button("📋 Cambiar analisis", use_container_width=True):
+            st.session_state.R_ccd = None
+            st.session_state.R_ccd_full = None
+            st.session_state.stage = 'analysis_select'
+            st.rerun()
+    with nav_ccd[2]:
+        if st.button("🔢 Revisar niveles y matriz", use_container_width=True):
+            st.session_state.R_ccd = None
+            st.session_state.R_ccd_full = None
+            st.session_state.stage = 'encode'
+            st.rerun()
+    with nav_ccd[3]:
+        if st.button("📁 Nuevo archivo", use_container_width=True):
+            st.session_state.R_ccd = None
+            st.session_state.R_ccd_full = None
+            st.session_state.raw = None
+            st.session_state.df_work = None
+            st.session_state.df_cod = None
+            st.session_state.df_real = None
             st.session_state.stage = 'upload'
             st.rerun()
