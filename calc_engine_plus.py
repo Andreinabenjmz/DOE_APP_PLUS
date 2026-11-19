@@ -196,78 +196,96 @@ def _term_to_formula(term):
 def _evaluar_interacciones_individualmente(df, factores, alpha=0.05):
     """
     Evalua cada interaccion doble individualmente contra el modelo base de solo principales.
+    Usa SS ortogonales calculados manualmente (estilo Minitab).
     Devuelve dict {term: {'SS':..., 'F':..., 'p':...}}.
     """
-    base_parts = [_term_to_formula(f) for f in factores]
-    base_formula = 'Q("Y") ~ ' + ' + '.join(base_parts)
+    k = len(factores)
+    esq = df[df['Curvatura']==0].copy()
+    cen = df[df['Curvatura']==1].copy()
+    Nf = len(esq)
+    Nc = len(cen)
+
+    # Calcular todos los efectos
+    ef_all = _calc_effects(df, factores, Nf)
+
+    # Pure Error
+    if Nc > 1:
+        y_cen = cen['Y'].values
+        ss_pe = ((y_cen - y_cen.mean())**2).sum()
+        df_pe = Nc - 1
+    else:
+        ss_pe = 0
+        df_pe = 0
+
+    # Interacciones 2-way
+    ints = [t for t in ef_all.keys() if len(t.split('*')) == 2]
 
     resultados = {}
-    for i in range(len(factores)):
-        for j in range(i+1, len(factores)):
-            f1, f2 = factores[i], factores[j]
-            term = f"{f1}*{f2}"
-
-            parts = base_parts + [f'Q("{f1}"):Q("{f2}")']
-            formula = 'Q("Y") ~ ' + ' + '.join(parts)
-            try:
-                m = smf.ols(formula, data=df).fit()
-                aov = sm.stats.anova_lm(m, typ=1)
-                ss_int = aov.loc[f'Q("{f1}"):Q("{f2}")', 'sum_sq']
-                df_int = aov.loc[f'Q("{f1}"):Q("{f2}")', 'df']
-                ms_int = ss_int / df_int
-                mse = m.mse_resid
-                df_err = m.df_resid
-                F_val = ms_int / mse
-                p_val = stats.f.sf(F_val, df_int, df_err)
-                resultados[term] = {'SS': ss_int, 'F': F_val, 'p': p_val, 'df_err': df_err}
-            except Exception:
-                resultados[term] = {'SS': 0, 'F': 0, 'p': 1.0, 'df_err': 0}
+    for term in ints:
+        ss_int = ef_all[term]['SS']
+        # Terminos no en el modelo: todas las interacciones excepto la candidata
+        other_ints = [t for t in ints if t != term]
+        ss_lof = sum(ef_all[t]['SS'] for t in other_ints)
+        ss_err = ss_lof + ss_pe
+        df_err = len(other_ints) + df_pe
+        ms_err = ss_err / df_err if df_err > 0 else np.nan
+        F_val = ss_int / ms_err if ms_err > 0 else 0
+        p_val = stats.f.sf(F_val, 1, df_err) if df_err > 0 else 1.0
+        resultados[term] = {'SS': ss_int, 'F': F_val, 'p': p_val, 'df_err': df_err}
     return resultados
 
 def seleccionar_modelo_minitab(df, factores, alpha=0.05):
     """
     Seleccion automatica de modelo al estilo Minitab (stepwise forward):
     1. Modelo base = todos los efectos principales
-    2. Evalua interacciones dobles contra el modelo actual
+    2. Evalua interacciones dobles usando SS ortogonales
     3. Incluye la mas significativa si p < alpha
     4. Re-evalua las restantes contra el nuevo modelo
     5. Repite hasta que ninguna sea significativa
     Devuelve lista de terminos seleccionados.
     """
-    terms = list(factores)
-    all_ints = []
-    for i in range(len(factores)):
-        for j in range(i+1, len(factores)):
-            all_ints.append(f"{factores[i]}*{factores[j]}")
+    k = len(factores)
+    esq = df[df['Curvatura']==0].copy()
+    cen = df[df['Curvatura']==1].copy()
+    Nf = len(esq)
+    Nc = len(cen)
 
-    remaining = list(all_ints)
+    # Calcular todos los efectos
+    ef_all = _calc_effects(df, factores, Nf)
+
+    # Pure Error
+    if Nc > 1:
+        y_cen = cen['Y'].values
+        ss_pe = ((y_cen - y_cen.mean())**2).sum()
+        df_pe = Nc - 1
+    else:
+        ss_pe = 0
+        df_pe = 0
+
+    # Interacciones 2-way disponibles
+    ints = [t for t in ef_all.keys() if len(t.split('*')) == 2]
+
+    terms = list(factores)
+    remaining = list(ints)
+
     while remaining:
         best_p = 1.0
         best_term = None
 
-        parts = [_term_to_formula(t) for t in terms]
-        base_formula = 'Q("Y") ~ ' + ' + '.join(parts) if parts else 'Q("Y") ~ 1'
-
         for term in remaining:
-            f1, f2 = term.split('*')
-            formula = base_formula + f' + Q("{f1}"):Q("{f2}")'
-            try:
-                m = smf.ols(formula, data=df).fit()
-                aov = sm.stats.anova_lm(m, typ=1)
-                key = f'Q("{f1}"):Q("{f2}")'
-                if key in aov.index:
-                    ss = aov.loc[key, 'sum_sq']
-                    df_t = aov.loc[key, 'df']
-                    ms = ss / df_t
-                    mse = m.mse_resid
-                    df_err = m.df_resid
-                    F_val = ms / mse
-                    p_val = stats.f.sf(F_val, df_t, df_err)
-                    if p_val < best_p:
-                        best_p = p_val
-                        best_term = term
-            except Exception:
-                pass
+            ss_int = ef_all[term]['SS']
+            # Terminos no en el modelo: interacciones que no estan en terms ni son la candidata
+            other_ints = [t for t in ints if t not in terms and t != term]
+            ss_lof = sum(ef_all[t]['SS'] for t in other_ints)
+            ss_err = ss_lof + ss_pe
+            df_err = len(other_ints) + df_pe
+            ms_err = ss_err / df_err if df_err > 0 else np.nan
+            F_val = ss_int / ms_err if ms_err > 0 else 0
+            p_val = stats.f.sf(F_val, 1, df_err) if df_err > 0 else 1.0
+
+            if p_val < best_p:
+                best_p = p_val
+                best_term = term
 
         if best_p < alpha and best_term is not None:
             terms.append(best_term)
@@ -280,6 +298,7 @@ def seleccionar_modelo_minitab(df, factores, alpha=0.05):
 def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
     """
     Calcula ANOVA estilo Minitab para disenos 2^k con centros.
+    Usa calculo ortogonal manual en lugar de statsmodels para el ANOVA.
 
     terms:
         None  -> seleccion automatica al estilo Minitab (stepwise forward)
@@ -306,84 +325,60 @@ def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
         terms = [t for t in ef_all.keys() if len(t.split('*')) <= 2]
 
     ef = {t: ef_all[t] for t in terms if t in ef_all}
-    yf = esq['Y'].mean(); yc = cen['Y'].mean()
-    SS_c = Nf*Nc/(Nf+Nc)*(yf-yc)**2
+    yf = esq['Y'].mean(); yc = cen['Y'].mean() if Nc > 0 else yf
+    SS_c = Nf*Nc/(Nf+Nc)*(yf-yc)**2 if Nc > 0 else 0
 
-    # Ajustar modelo con statsmodels
-    parts = [_term_to_formula(t) for t in terms]
-    formula = 'Q("Y") ~ ' + ' + '.join(parts) if parts else 'Q("Y") ~ 1'
-    if df_b > 0:
-        formula = 'Q("Y") ~ Q("Grupo") + ' + formula.split('~')[1].strip()
-    formula += ' + Q("Curvatura")'
-
-    mfit = smf.ols(formula, data=df).fit()
-    aov_sm = sm.stats.anova_lm(mfit, typ=1)
-
-    # Construir ANOVA estilo Minitab con lineas de agrupacion
-    _rows = []
-    ss_lin = 0; df_lin = 0
-    ss_2w = 0; df_2w = 0
-
-    # Bloques
-    MS_b = F_b = p_b = np.nan
-    if df_b > 0:
-        ss_b = aov_sm.loc['Q("Grupo")', 'sum_sq'] if 'Q("Grupo")' in aov_sm.index else 0
-        df_b_sm = aov_sm.loc['Q("Grupo")', 'df'] if 'Q("Grupo")' in aov_sm.index else df_b
-        MS_b = ss_b / df_b_sm if df_b_sm > 0 else np.nan
-        _rows.append(('Bloques', ss_b, df_b_sm, MS_b, np.nan, np.nan))
-
-    # Efectos principales (acumular para fila Linear)
-    for f in factores:
-        if f in terms:
-            key = f'Q("{f}")'
-            if key in aov_sm.index:
-                ss = aov_sm.loc[key, 'sum_sq']
-                df_t = aov_sm.loc[key, 'df']
-                ss_lin += ss; df_lin += int(df_t)
-                _rows.append((f, ss, df_t, np.nan, np.nan, np.nan))
-
-    # Interacciones 2-Way (acumular para fila 2-Way)
-    for t in terms:
-        if '*' in t and len(t.split('*')) == 2:
-            f1, f2 = t.split('*')
-            key = f'Q("{f1}"):Q("{f2}")'
-            if key in aov_sm.index:
-                ss = aov_sm.loc[key, 'sum_sq']
-                df_t = aov_sm.loc[key, 'df']
-                ss_2w += ss; df_2w += int(df_t)
-                _rows.append((t, ss, df_t, np.nan, np.nan, np.nan))
-
-    # Curvatura
-    key_c = 'Q("Curvatura")'
-    if key_c in aov_sm.index:
-        ss_c_sm = aov_sm.loc[key_c, 'sum_sq']
-        df_c_sm = aov_sm.loc[key_c, 'df']
+    # Pure Error
+    if Nc > 1:
+        y_cen = cen['Y'].values
+        ss_pe = ((y_cen - y_cen.mean())**2).sum()
+        df_pe = Nc - 1
     else:
-        ss_c_sm = SS_c; df_c_sm = 1
+        ss_pe = 0
+        df_pe = 0
 
-    # Error residual
-    if 'Residual' in aov_sm.index:
-        ss_r = aov_sm.loc['Residual', 'sum_sq']
-        df_r = int(aov_sm.loc['Residual', 'df'])
-    else:
-        ss_r = SS_t - sum(r[1] for r in _rows) - ss_c_sm
-        df_r = N - 1 - (df_b + len(ef) + 1)
+    # SS de terminos en el modelo
+    ss_principales = [ef_all[f]['SS'] for f in factores if f in terms]
+    ss_interactions = [ef_all[t]['SS'] for t in terms if '*' in t and len(t.split('*')) == 2]
+
+    ss_lin = sum(ss_principales)
+    df_lin = len(ss_principales)
+    ss_2w = sum(ss_interactions)
+    df_2w = len(ss_interactions)
+
+    # SS Lack-of-Fit = suma de SS de terminos NO en el modelo (orden <= 2)
+    all_terms_le2 = [t for t in ef_all.keys() if len(t.split('*')) <= 2]
+    ss_lof = sum(ef_all[t]['SS'] for t in all_terms_le2 if t not in terms)
+    df_lof = len(all_terms_le2) - len(terms)
+
+    # SS Error = LoF + Pure Error
+    ss_r = ss_lof + ss_pe
+    df_r = df_lof + df_pe
 
     if df_r < 1:
         raise ValueError(f"df_resid={df_r}<1")
 
     MS_r = ss_r / df_r
 
-    # Reconstruir rows con filas de agrupacion y F/p calculados
+    # Construir ANOVA estilo Minitab con lineas de agrupacion
     rows = []
 
+    # Modelo (suma de todo el modelo: Linear + 2-Way + Curvatura)
+    ss_model = ss_lin + ss_2w + SS_c
+    df_model = df_lin + df_2w + (1 if Nc > 0 else 0)
+    if df_model > 0:
+        ms_model = ss_model / df_model
+        F_model = ms_model / MS_r
+        p_model = stats.f.sf(F_model, df_model, df_r)
+        rows.append(('Model', ss_model, df_model, ms_model, F_model, p_model))
+
     # Bloques
+    MS_b = F_b = p_b = np.nan
     if df_b > 0:
-        ss_bv = _rows[0][1]; df_bv = _rows[0][2]
-        ms_bv = ss_bv / df_bv
-        F_bv = ms_bv / MS_r
-        p_bv = stats.f.sf(F_bv, df_bv, df_r)
-        rows.append(('Bloques', ss_bv, df_bv, ms_bv, F_bv, p_bv))
+        MS_b = SS_b / df_b
+        F_b = MS_b / MS_r
+        p_b = stats.f.sf(F_b, df_b, df_r)
+        rows.append(('Bloques', SS_b, df_b, MS_b, F_b, p_b))
 
     # Linear
     if df_lin > 0:
@@ -395,14 +390,11 @@ def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
     # Principales individuales
     for f in factores:
         if f in terms:
-            key = f'Q("{f}")'
-            if key in aov_sm.index:
-                ss = aov_sm.loc[key, 'sum_sq']
-                df_t = aov_sm.loc[key, 'df']
-                ms_t = ss / df_t
-                F_t = ms_t / MS_r
-                p_t = stats.f.sf(F_t, df_t, df_r)
-                rows.append((f, ss, df_t, ms_t, F_t, p_t))
+            ss = ef_all[f]['SS']
+            ms_t = ss
+            F_t = ms_t / MS_r
+            p_t = stats.f.sf(F_t, 1, df_r)
+            rows.append((f, ss, 1, ms_t, F_t, p_t))
 
     # 2-Way Interactions
     if df_2w > 0:
@@ -414,44 +406,39 @@ def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
     # Interacciones individuales
     for t in terms:
         if '*' in t and len(t.split('*')) == 2:
-            f1, f2 = t.split('*')
-            key = f'Q("{f1}"):Q("{f2}")'
-            if key in aov_sm.index:
-                ss = aov_sm.loc[key, 'sum_sq']
-                df_t = aov_sm.loc[key, 'df']
-                ms_t = ss / df_t
-                F_t = ms_t / MS_r
-                p_t = stats.f.sf(F_t, df_t, df_r)
-                rows.append((t, ss, df_t, ms_t, F_t, p_t))
+            ss = ef_all[t]['SS']
+            ms_t = ss
+            F_t = ms_t / MS_r
+            p_t = stats.f.sf(F_t, 1, df_r)
+            rows.append((t, ss, 1, ms_t, F_t, p_t))
 
     # Curvatura
-    ms_c = ss_c_sm / df_c_sm
-    F_c = ms_c / MS_r
-    p_c = stats.f.sf(F_c, df_c_sm, df_r)
+    F_c = p_c = np.nan
+    if Nc > 0:
+        ms_c = SS_c
+        F_c = ms_c / MS_r
+        p_c = stats.f.sf(F_c, 1, df_r)
+        rows.append(('Curvatura', SS_c, 1, ms_c, F_c, p_c))
+
+    # Error
+    rows.append(('Error', ss_r, df_r, MS_r, np.nan, np.nan))
 
     # Lack-of-Fit y Pure Error
-    if Nc > 1:
-        y_cen = cen['Y'].values
-        ss_pe = ((y_cen - y_cen.mean())**2).sum()
-        df_pe = Nc - 1
+    if df_lof > 0 and df_pe > 0:
+        ms_lof = ss_lof / df_lof
         ms_pe = ss_pe / df_pe
-
-        ss_lof = ss_r - ss_pe
-        df_lof = df_r - df_pe
-        ms_lof = ss_lof / df_lof if df_lof > 0 else np.nan
-        F_lof = ms_lof / ms_pe if ms_pe > 0 else np.nan
-        p_lof = stats.f.sf(F_lof, df_lof, df_pe) if df_lof > 0 else np.nan
-
-        rows.append(('Curvatura', ss_c_sm, df_c_sm, ms_c, F_c, p_c))
-        rows.append(('Error', ss_r, df_r, MS_r, np.nan, np.nan))
+        F_lof = ms_lof / ms_pe
+        p_lof = stats.f.sf(F_lof, df_lof, df_pe)
         rows.append(('  Lack-of-Fit', ss_lof, df_lof, ms_lof, F_lof, p_lof))
         rows.append(('  Pure Error', ss_pe, df_pe, ms_pe, np.nan, np.nan))
-    else:
-        rows.append(('Curvatura', ss_c_sm, df_c_sm, ms_c, F_c, p_c))
-        rows.append(('Residual', ss_r, df_r, MS_r, np.nan, np.nan))
+    elif df_pe > 0:
+        rows.append(('  Pure Error', ss_pe, df_pe, ss_pe/df_pe, np.nan, np.nan))
+
+    # Total
+    rows.append(('Total', SS_t, N - 1, np.nan, np.nan, np.nan))
 
     anova = pd.DataFrame(rows, columns=['Fuente','SS','GL','MS','F','p'])
-    anova['F_crit'] = [stats.f.ppf(0.95, gl, df_r) if pd.notna(gl) and gl > 0 else np.nan
+    anova['F_crit'] = [stats.f.ppf(0.95, gl, df_r) if pd.notna(gl) and gl > 0 and gl != (N-1) else np.nan
                        for gl in anova['GL']]
     anova['Sig'] = ['OK' if (pd.notna(p) and p < 0.05) else ('-' if pd.isna(p) else 'NO')
                     for p in anova['p']]
@@ -476,17 +463,31 @@ def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
     else:
         R_intercepto_bloques = y
 
-    R2 = mfit.rsquared; R2a = mfit.rsquared_adj
+    # Ajustar modelo con statsmodels SOLO para predicciones/R2 (no para ANOVA)
+    parts = [_term_to_formula(t) for t in terms]
+    formula = 'Q("Y") ~ ' + ' + '.join(parts) if parts else 'Q("Y") ~ 1'
+    if df_b > 0:
+        formula = 'Q("Y") ~ Q("Grupo") + ' + formula.split('~')[1].strip()
+    if Nc > 0:
+        formula += ' + Q("Curvatura")'
+
+    try:
+        mfit = smf.ols(formula, data=df).fit()
+        R2 = mfit.rsquared
+        R2a = mfit.rsquared_adj
+    except Exception:
+        R2 = 1 - ss_r / SS_t
+        R2a = 1 - (ss_r / df_r) / (SS_t / (N - 1)) if df_r > 0 and N > 1 else np.nan
 
     R = dict(via=VIA_2, k=k, factores=factores, N=N, Nf=Nf, Nc=Nc,
              n_bloques=n_b, n_replicas=n_b, tiene_bloques=True, tiene_centro=True,
-             y_bar=y, SS_total=SS_t, SS_blocks=SS_b, SS_curv=ss_c_sm,
+             y_bar=y, SS_total=SS_t, SS_blocks=SS_b, SS_curv=SS_c,
              intercepto_bloques=R_intercepto_bloques, coef_bloques=R_coef_bloques,
-             SS_resid=ss_r, SS_model=sum(r[1] for r in rows if r[0] not in ['Error','Residual','  Lack-of-Fit','  Pure Error']),
+             SS_resid=ss_r, SS_model=ss_model,
              effects=ef, all_effects=ef_all,
              terms_included=list(terms), anova=anova,
-             MS_resid=MS_r, MS_curv=ms_c,
-             F_curv=F_c, p_curv=p_c,
+             MS_resid=MS_r, MS_curv=SS_c if Nc > 0 else np.nan,
+             F_curv=F_c if Nc > 0 else np.nan, p_curv=p_c if Nc > 0 else np.nan,
              df_resid=df_r, yf_bar=yf, yc_bar=yc,
              R2=R2, R2_adj=R2a,
              main_effects=_calc_main_effects(df, factores),
@@ -616,71 +617,93 @@ def _gen_seminormal(R):
     ax.legend(fontsize=8); ax.grid(alpha=0.3); plt.tight_layout()
     fn = 'seminormal.png'; plt.savefig(fn, bbox_inches='tight'); plt.close(); return fn
 
-def _gen_main_effects(R, spec):
+def _gen_main_effects(R, spec=None, mapeos=None):
     nf = len(R['factores'])
-    # EL TRUCO ESTÁ AQUÍ: sharey=True
     fig, axes = plt.subplots(1, nf, figsize=(4*nf, 4), sharey=True)
-    
     if nf == 1: axes = [axes]
-    
+
     for i, (ax, f) in enumerate(zip(axes, R['factores'])):
         me = R['main_effects'][f]
-        ax.plot([-1,1], [me['low'], me['high']], 'o-', markersize=10)
-        ax.set_xticks([-1,1]); ax.set_xticklabels(['-1','+1'])
-        ax.set_xlabel(f)
-        
-        # Solo poner el título del Eje Y en el primer gráfico
+        # Usar valores reales si hay mapeos
+        if mapeos and f in mapeos and -1 in mapeos[f] and 1 in mapeos[f]:
+            v_low = mapeos[f][-1]
+            v_high = mapeos[f][1]
+            ax.plot([v_low, v_high], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
+            ax.set_xticks([v_low, v_high])
+            ax.set_xticklabels([f'{v_low}', f'{v_high}'])
+            ax.set_xlabel(f)
+        else:
+            ax.plot([-1,1], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
+            ax.set_xticks([-1,1]); ax.set_xticklabels(['-1','+1'])
+            ax.set_xlabel(f)
+
         if i == 0:
             ax.set_ylabel('Media de Y')
-            
         ax.set_title(f'Efecto principal: {f}'); ax.grid(alpha=0.3)
-        
+
         if spec:
             ax.axhspan(spec['target']-spec['tol'], spec['target']+spec['tol'],
                        alpha=0.1, color='green')
-                       
+
     plt.tight_layout()
     fn = 'efectos_principales.png'; plt.savefig(fn, bbox_inches='tight'); plt.close(); return fn
 
 
-def _gen_interactions(R, custom_order=None):
+def _gen_interactions(R, custom_order=None, mapeos=None):
     es_fb = False
     sig = [n for n in R['effects'] if len(n.split('*'))==2]
-    
-    # NUEVO: Si el usuario definió un orden personalizado, lo usamos
+
     if custom_order is not None and len(custom_order) > 0:
         sig = [n for n in custom_order if n in R['effects']]
-        
+
     if not sig: return []
     files = []
-    chunk_size = 3 # Máximo 3 gráficos por fila
+    chunk_size = 2
 
-    # Procesar en bloques de 3
     for i in range(0, len(sig), chunk_size):
         chunk = sig[i:i+chunk_size]
-        
-        # Crear figura para el bloque actual
-        fig, axes = plt.subplots(1, len(chunk), figsize=(5*len(chunk), 4))
-        if len(chunk) == 1: 
+        fig, axes = plt.subplots(1, len(chunk), figsize=(6*len(chunk), 4.5))
+        if len(chunk) == 1:
             axes = [axes]
-            
+
         for ax, name in zip(axes, chunk):
-            # CORRECCIÓN PARA INTERACCIONES DE 2, 3 O 4 VÍAS
             parts = name.split('*')
             if len(parts) == 2:
                 f1, f2 = parts
                 it = R['interactions'][(f1,f2)]
-                ax.plot([-1,1], [it['mll'], it['mhl']], 'o-', label=f'{f2}=-1')
-                ax.plot([-1,1], [it['mlh'], it['mhh']], 's--', label=f'{f2}=+1')
-                ax.set_xticks([-1,1]); ax.set_xticklabels([f'{f1}=-1', f'{f1}=+1'])
-                ax.set_xlabel(f1); ax.set_ylabel('Media de Y')
-                suf = ' (exploratoria)' if R['via'] == VIA_3 else (' (NO significativa)' if es_fb else '')
-                ax.set_title(f'Interaccion {name}{suf}'); ax.legend(); ax.grid(alpha=0.3)
-            
+
+                # Usar valores reales si hay mapeos
+                if mapeos and f1 in mapeos and f2 in mapeos:
+                    v1_low = mapeos[f1].get(-1, -1)
+                    v1_high = mapeos[f1].get(1, 1)
+                    v2_low = mapeos[f2].get(-1, -1)
+                    v2_high = mapeos[f2].get(1, 1)
+
+                    ax.plot([v1_low, v1_high], [it['mll'], it['mhl']],
+                            'o-', color='#90CAF9', markersize=8, linewidth=2,
+                            label=f'{f2} = {v2_low}')
+                    ax.plot([v1_low, v1_high], [it['mlh'], it['mhh']],
+                            's-', color='#EF9A9A', markersize=8, linewidth=2,
+                            label=f'{f2} = {v2_high}')
+                    ax.set_xticks([v1_low, v1_high])
+                    ax.set_xlabel(f1)
+                else:
+                    ax.plot([-1,1], [it['mll'], it['mhl']], 'o-', color='#90CAF9',
+                            markersize=8, linewidth=2, label=f'{f2} = -1')
+                    ax.plot([-1,1], [it['mlh'], it['mhh']], 's-', color='#EF9A9A',
+                            markersize=8, linewidth=2, label=f'{f2} = +1')
+                    ax.set_xticks([-1,1]); ax.set_xticklabels([f'{f1} = -1', f'{f1} = +1'])
+                    ax.set_xlabel(f1)
+
+                ax.set_ylabel('Media de Y')
+                ax.legend(loc='best', framealpha=0.9)
+                ax.grid(alpha=0.3)
+                suf = ' (exploratoria)' if R['via'] == VIA_3 else ''
+                ax.set_title(f'Interaccion {name}{suf}')
+
         plt.tight_layout()
-        # Guardar la imagen del bloque (ej. interacciones_1.png, interacciones_2.png)
         fn_bloque = f'interacciones_grupo_{i//chunk_size + 1}.png'
-        plt.savefig(fn_bloque, bbox_inches='tight'); plt.close()
+        plt.savefig(fn_bloque, bbox_inches='tight', dpi=150); plt.close()
         files.append(fn_bloque)
 
     return files
