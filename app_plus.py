@@ -176,12 +176,30 @@ def _validar_analisis_vs_diseno(df_cod, factores, respuesta, analisis):
             msgs.append(f"Via 3 es para disenos NO replicados SIN centros. Detectados: {centros} centros.")
         if replicas > 0:
             msgs.append(f"Via 3 no usa replicas. Detectadas: {replicas} replicas.")
-
+    
     elif analisis == 'ccd':
-        if k < 2 or k > 5:
-            msgs.append(f"CCD tipicamente usa 2-5 factores. Detectados: {k}.")
+        R_rsm = st.session_state.R_rsm
+        st.markdown("## Resultados CCD (Superficie de Respuesta)")
+        if R_rsm:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("S (Error estandar)", f"{np.sqrt(R_rsm['model'].mse_resid):.6f}")
+            c2.metric("R2", f"{R_rsm['R2']*100:.2f}%")
+            c3.metric("R2 ajustado", f"{R_rsm['R2_adj']*100:.2f}%")
+            c4.metric("Terminos en modelo", len(R_rsm['terms']))
 
-    return msgs
+            st.markdown("### Tabla ANOVA (CCD)")
+            st.dataframe(R_rsm['anova'], use_container_width=True)
+
+            if R_rsm.get('lof'):
+                st.markdown("### Prueba de Falta de Ajuste (Lack-of-Fit)")
+                st.write(R_rsm['lof'])
+
+            st.markdown("### Ecuacion de Regresion (Codificada)")
+            st.code(R_rsm['eq_coded'], language='text')
+
+            st.markdown("### Graficos de Residuales")
+            fn_res = ce_rsm.graf_residuales_ccd(R_rsm)
+            st.image(fn_res)
 
 
 def _sugerir_analisis(df_cod, factores, respuesta):
