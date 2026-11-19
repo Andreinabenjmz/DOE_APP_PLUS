@@ -370,7 +370,7 @@ if st.session_state.stage == 'upload':
             st.session_state.R_ccd = None
             st.session_state.opt_ccd = None
             for wk in ('sel_factores', 'sel_respuestas', 'sel_analisis', 'confirm_centros',
-                       'confirm_no_centros', 'modo_sel', 'modo_formato_manual'):
+                       'confirm_no_centros', 'modo_sel'):
                 st.session_state.pop(wk, None)
 
             st.success(f"Archivo cargado: {raw.shape[0]} filas × {raw.shape[1]} columnas")
@@ -446,12 +446,20 @@ elif st.session_state.stage == 'preview':
         es_cod_auto = _es_codificada(raw, factores)
         fmt_auto_txt = "Matriz codificada (-1, 0, +1)" if es_cod_auto else "Matriz NO codificada (valores reales)"
 
-        modo_fmt = st.radio(
-            f"Formato de la matriz (detectado automaticamente: **{fmt_auto_txt}**):",
-            ["Deteccion automatica", "Forzar: Ya viene codificada (-1, 0, +1)", "Forzar: Viene en valores reales"],
-            horizontal=True,
-            key="modo_formato_manual"
-        )
+        es_cod = _es_codificada(raw, factores)
+        st.session_state.es_codificada = es_cod
+
+        cols_mostrar = []
+        if st.session_state.corrida_col:
+            cols_mostrar.append(st.session_state.corrida_col)
+        cols_mostrar.extend(factores)
+        cols_mostrar.extend(respuestas)
+        st.dataframe(raw[cols_mostrar], use_container_width=True)
+
+        st.markdown(f"""
+        **Formato detectado:** {'Matriz codificada (-1, 0, +1)' if es_cod else 'Matriz NO codificada (valores reales)'}
+        """)
+     
         if "Ya viene codificada" in modo_fmt:
             es_cod = True
         elif "valores reales" in modo_fmt:
@@ -1104,7 +1112,7 @@ elif st.session_state.stage == 'results':
         st.markdown("---")
         st.markdown("## Graficos Diagnostico")
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Pareto", "Semi-normal", "Efectos Principales", "Interacciones", "Superficie 3D"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Pareto", "Semi-normal", "Efectos Principales", "Interacciones", "Superficie 3D y Contorno"])
 
         with tab1:
             try:
@@ -1167,44 +1175,52 @@ elif st.session_state.stage == 'results':
 
         with tab5:
             if R['via'] == ce.VIA_3:
-                st.info("Los graficos de superficie 3D requieren Via 1 o Via 2.")
+                st.info("Los graficos de superficie 3D y contorno requieren Via 1 o Via 2.")
             else:
                 try:
                     c3d_1, c3d_2 = st.columns(2)
-                    f1_3d = c3d_1.selectbox("Factor en eje X (3D):", factores, index=0, key="fact_3d_x")
+                    f1_3d = c3d_1.selectbox("Factor en eje X:", factores, index=0, key="fact_3d_x")
                     f2_opts_3d = [f for f in factores if f != f1_3d]
-                    f2_3d = c3d_2.selectbox("Factor en eje Y (3D):", f2_opts_3d, index=min(len(f2_opts_3d) - 1, 1), key="fact_3d_y")
+                    f2_3d = c3d_2.selectbox("Factor en eje Y:", f2_opts_3d, index=min(len(f2_opts_3d) - 1, 1), key="fact_3d_y")
 
-                    sig_3d = inspect.signature(ce._gen_superficie_3d).parameters
-                    if 'f1' in sig_3d:
-                        fn_3d, _, _, _ = ce._gen_superficie_3d(
-                            R, resp_name=respuesta,
-                            f1=f1_3d, f2=f2_3d,
-                            mapeos=st.session_state.mapeos_inversos,
-                            unidades=unidades
-                        )
-                    else:
-                        fn_3d, _, _, _ = ce._gen_superficie_3d(R, resp_name=respuesta)
+                    e3d_1, e3d_2 = st.columns([1.5, 1])
+                    estilo_3d = e3d_1.radio(
+                        "Estetica del grafico:",
+                        ["Clasico (estilo articulo)", "Moderno (viridis)"],
+                        horizontal=True,
+                        key="fact_3d_estilo"
+                    )
+                    estilo_3d_key = 'clasico' if estilo_3d.startswith("Clasico") else 'moderno'
+                    cmap_3d = e3d_2.selectbox(
+                        "Colormap (modo clasico):",
+                        ["terrain", "RdYlGn", "jet", "viridis"],
+                        index=0,
+                        disabled=(estilo_3d_key == 'moderno'),
+                        key="fact_3d_cmap"
+                    )
+
+                    fn_3d, _, _, _ = ce._gen_superficie_3d(
+                        R, resp_name=respuesta,
+                        f1=f1_3d, f2=f2_3d,
+                        mapeos=st.session_state.mapeos_inversos,
+                        unidades=unidades,
+                        estilo=estilo_3d_key,
+                        cmap=cmap_3d
+                    )
 
                     if fn_3d:
-                        st.markdown("#### Superficie 3D y Curvas de Nivel (Modelo)")
                         st.image(fn_3d, use_container_width=True)
 
-                    sig_interp = inspect.signature(ce._gen_superficie_interpolada).parameters
-                    if 'mapeos' in sig_interp:
-                        fn_interp = ce._gen_superficie_interpolada(
-                            df, R, f1=f1_3d, f2=f2_3d, resp_name=respuesta,
-                            mapeos=st.session_state.mapeos_inversos,
-                            unidades=unidades
+                    if R.get('tiene_centro') and pd.notna(R.get('p_curv')) and R['p_curv'] < 0.05:
+                        _info_box(
+                            "Nota sobre curvatura",
+                            "La prueba de curvatura fue significativa (p < 0.05). El grafico anterior muestra el plano/silla del modelo factorial; "
+                            "para modelar la curvatura cuadratica completa (A²) usa un diseno CCD.",
+                            tipo='tip'
                         )
-                    else:
-                        fn_interp = ce._gen_superficie_interpolada(df, R, f1=f1_3d, f2=f2_3d, resp_name=respuesta)
-
-                    if fn_interp:
-                        st.markdown("#### Superficie 3D Interpolada (Datos Experimentales)")
-                        st.image(fn_interp, use_container_width=True)
                 except Exception as e:
                     st.warning(f"No se pudo generar la superficie 3D: {e}")
+                    
 
         # PREDICCION
         st.markdown("---")
@@ -1527,11 +1543,12 @@ elif st.session_state.stage == 'ccd_diag':
             col_idx = 0
             if mostrar_3d and hasattr(ce_rsm, 'graf_superficie_3d_ccd'):
                 fn_3d_ccd = ce_rsm.graf_superficie_3d_ccd(
-                    R, xi, yi, cmap=cmaps.get(r) or 'viridis',
+                    R, xi, yi, estilo=estilo_key, cmap=cmaps.get(r),
                     xlabel=etiq_ccd[xi], ylabel=etiq_ccd[yi], fijos=fijos
                 )
                 gcols[col_idx].image(fn_3d_ccd, use_container_width=True)
                 col_idx += 1
+            
             if mostrar_cont:
                 fn_c = ce_rsm.graf_contorno_ccd(
                     R, xi, yi, estilo=estilo_key, cmap=cmaps.get(r),
