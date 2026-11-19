@@ -1,154 +1,269 @@
 # app_plus.py
-# Interfaz Streamlit con flujo tipo Minitab
+# Interfaz Streamlit - Flujo completo redisenado
+# Cargar -> Detectar -> Codificar/Descodificar -> Elegir analisis -> Resultados
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import os
-import io
-import zipfile
-from datetime import date
-from docx import Document
 
 import calc_engine_plus as ce
 import calc_engine_rsm as ce_rsm
 
-from docx.shared import Inches
+st.set_page_config(
+    page_title="DOE Tool - Analisis Factorial y RSM",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-def _insertar_tabla_word(doc, df_tabla):
-    """Convierte un DataFrame de Pandas en una tabla bonita de Word."""
-    cols = list(df_tabla.columns)
-    t = doc.add_table(rows=1, cols=len(cols))
-    t.style = 'Table Grid'
-    hdr_cells = t.rows[0].cells
-    for i, col_name in enumerate(cols):
-        hdr_cells[i].text = str(col_name)
-        for paragraph in hdr_cells[i].paragraphs:
-            for run in paragraph.runs:
-                run.font.bold = True
-                run.font.size = Pt(9)
-    
-    for _, row in df_tabla.iterrows():
-        row_cells = t.add_row().cells
-        for i, col_name in enumerate(cols):
-            val = row[col_name]
-            if pd.isna(val):
-                row_cells[i].text = "—"
-            elif isinstance(val, float):
-                row_cells[i].text = f"{val:.4f}"
-            else:
-                row_cells[i].text = str(val)
-            for paragraph in row_cells[i].paragraphs:
-                for run in paragraph.runs:
-                    run.font.size = Pt(9)
-    doc.add_paragraph() # Espacio después de la tabla
+def _init_state():
+    defaults = {
+        'stage': 'upload',
+        'raw': None,
+        'df_work': None,
+        'factores': [],
+        'respuesta': None,
+        'corrida_col': None,
+        'es_codificada': False,
+        'mapeos_niveles': {},
+        'mapeos_inversos': {},
+        'analisis_tipo': None,
+        'modelo_fraccionado': False,
+        'resolucion': None,
+        'R': None,
+        'R_rsm': None,
+        'nombre': '',
+        'estudiante': '',
+        'curso': '',
+        'alpha_modelo': 0.05,
+        'modo_seleccion': 'backward',
+        'terms_manual': [],
 
-st.set_page_config(page_title="DOE 2^k - Modo Minitab", layout="wide")
+    }
+    for k, v in defaults.items():
+        st.session_state.setdefault(k, v)
 
-for k, v in {
-    'stage': 'upload', 'raw': None, 'df': None, 'via': None,
-    'factores': None, 'respuesta': None, 'spec': None,
-    'R_full': None, 'R_reduced': None, 'selected_terms': None,
-    'nombre': '', 'estudiante': '', 'curso': '',
-    'excel_bytes': None, 'word_bytes': None, 'figs_dict': None,
-}.items():
-    st.session_state.setdefault(k, v)
+_init_state()
 
-# ---------- Deteccion inteligente de columnas ----------
 def _detectar_columnas(raw):
     factores, respuestas, descartar = [], [], []
-    id_names = {'run','corrida','corrida_id','id','n_corrida','numero_corrida',
-                'obs','observacion','index','unnamed: 0',
-                'run order','std order','run type','order','tipo','type',
-                'block','bloque','order_run','orden','orden corrida',
-                'orden estandar','stdorder','runorder'}
-    resp_exact = {'y', 'response', 'respuesta', 'resp'}
-    resp_hints = ['rep', 'replica', 'block', 'bloque']
+    id_names = {
+        'run','corrida','corrida_id','id','n_corrida','numero_corrida',
+        'obs','observacion','index','unnamed: 0',
+        'run order','std order','run type','order','tipo','type','tipopto',
+        'block','bloque','order_run','orden','orden corrida','orden de corrida',
+        'orden estandar','orden estandar','stdorder','runorder',
+        'pt type','pt_type','tipo punto','tipo de punto',
+        'replicate','replica','rep',
+    }
+    resp_names = {'y', 'response', 'respuesta', 'resp', 'rendimiento', 'yield'}
 
     for c in raw.columns:
         nombre_lower = str(c).strip().lower()
+        nombre_norm = nombre_lower.replace('a','a').replace('e','e').replace('i','i').replace('o','o').replace('u','u').replace('n','n')
         vals = raw[c].dropna().unique().tolist()
         n_unicos = len(vals)
 
-        if nombre_lower in id_names or n_unicos <= 1:
+        if any(x in nombre_norm for x in ['corrida','run','orden','order']):
+            if n_unicos == len(raw):
+                descartar.append(c)
+                continue
+
+        if nombre_norm in id_names or n_unicos <= 1:
             descartar.append(c)
             continue
 
-        es_resp_hint = (nombre_lower in resp_exact or any(h in nombre_lower for h in resp_hints))
-        if es_resp_hint and pd.api.types.is_numeric_dtype(raw[c]):
+        if nombre_norm in resp_names or any(x in nombre_norm for x in ['resp','yield','rend']):
+            if pd.api.types.is_numeric_dtype(raw[c]):
+                respuestas.append(c)
+                continue
+
+        if pd.api.types.is_numeric_dtype(raw[c]):
+            if n_unicos in [2, 3]:
+                factores.append(c)
+                continue
             respuestas.append(c)
             continue
 
-        if n_unicos == 2:
+        if n_unicos <= 5:
             factores.append(c)
             continue
 
-        if n_unicos == 3 and pd.api.types.is_numeric_dtype(raw[c]):
-            factores.append(c)   # CCD tambien en unidades reales (0.05/0.5/0.95)
-            continue
+        descartar.append(c)
 
-        if pd.api.types.is_numeric_dtype(raw[c]):
-            respuestas.append(c)
-            continue
-
-        factores.append(c)
     return factores, respuestas, descartar
 
-# ---------- Sidebar ----------
+
+def _es_codificada(raw, cols):
+    for c in cols:
+        if not pd.api.types.is_numeric_dtype(raw[c]):
+            return False
+        vals = set(pd.to_numeric(raw[c], errors='coerce').dropna().unique())
+        if not vals.issubset({-1, 0, 1}):
+            return False
+    return True
+
+
+def _detectar_centros(raw, cols):
+    df_num = raw[cols].apply(pd.to_numeric, errors='coerce')
+    return int(df_num.eq(0).all(axis=1).sum())
+
+
+def _detectar_replicas(raw, cols, resp_col):
+    if resp_col is None or resp_col not in raw.columns:
+        return 0
+    df_group = raw.groupby(cols)[resp_col].count()
+    return int((df_group > 1).sum())
+
+
+def _detectar_bloques(raw, cols):
+    if 'Block' in raw.columns or 'Bloque' in raw.columns:
+        return True
+    k = len(cols)
+    n = len(raw)
+    centros = _detectar_centros(raw, cols)
+    esquinas = n - centros
+    potencia = 2 ** k
+    return esquinas > potencia
+
+
+def _validar_analisis_vs_diseno(raw, factores, respuesta, analisis):
+    k = len(factores)
+    n = len(raw)
+    centros = _detectar_centros(raw, factores)
+    esquinas = n - centros
+    replicas = _detectar_replicas(raw, factores, respuesta)
+    tiene_bloques = _detectar_bloques(raw, factores)
+    msgs = []
+
+    if analisis == 'factorial_via1':
+        if centros > 0:
+            msgs.append(f"Via 1 requiere SIN puntos centrales. Detectados: {centros} centros.")
+        if replicas == 0:
+            msgs.append("Via 1 requiere replicas puras. No se detectaron.")
+
+    elif analisis == 'factorial_via2':
+        if centros == 0:
+            msgs.append("Via 2 requiere puntos centrales. No se detectaron.")
+
+    elif analisis == 'factorial_via3':
+        if centros > 0:
+            msgs.append(f"Via 3 es para disenos NO replicados SIN centros. Detectados: {centros} centros.")
+        if replicas > 0:
+            msgs.append(f"Via 3 no usa replicas. Detectadas: {replicas} replicas.")
+
+    elif analisis == 'ccd':
+        if k < 2 or k > 5:
+            msgs.append(f"CCD tipicamente usa 2-5 factores. Detectados: {k}.")
+
+    return msgs
+
+
+def _sugerir_analisis(raw, factores, respuesta):
+    n = len(raw)
+    k = len(factores)
+    centros = _detectar_centros(raw, factores)
+    esquinas = n - centros
+    replicas = _detectar_replicas(raw, factores, respuesta)
+
+    if centros > 0:
+        return 'factorial_via2', f"Detectado: {esquinas} esquinas + {centros} centros. Sugerencia: Via 2."
+    elif replicas > 0:
+        return 'factorial_via1', f"Detectado: {esquinas} esquinas con {replicas} replicas. Sugerencia: Via 1."
+    else:
+        return 'factorial_via3', f"Detectado: {esquinas} esquinas sin replicas ni centros. Sugerencia: Via 3."
+
+
+def _codificar_factor(serie, v_bajo, v_alto):
+    v_medio = (v_bajo + v_alto) / 2
+    rango = (v_alto - v_bajo) / 2
+    if rango == 0:
+        return serie
+    return (serie - v_medio) / rango
+
+
+def _descodificar_factor(serie_cod, v_bajo, v_alto):
+    v_medio = (v_bajo + v_alto) / 2
+    rango = (v_alto - v_bajo) / 2
+    return serie_cod * rango + v_medio
+
+
+def _info_box(titulo, texto, tipo='info'):
+    emoji = {'info': '💡', 'warning': '⚠️', 'tip': '📌', 'success': '✅'}.get(tipo, '💡')
+    color = '#2196F3' if tipo == 'info' else '#ff9800' if tipo == 'warning' else '#4caf50'
+    st.markdown(f"""
+    <div style="background-color:#f0f2f6;padding:12px 16px;border-radius:8px;margin:8px 0;border-left:4px solid {color};">
+    <b>{emoji} {titulo}</b><br>{texto}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
 with st.sidebar:
     st.header("Configuracion")
-    if st.button("Reiniciar"):
+
+    if st.button("Reiniciar todo", use_container_width=True):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
 
-    # 1. GENERADOR DE MATRIZ (Arriba, para que lo descarguen primero)
-    st.markdown("### 🛠️ ¿No tienes matriz?")
-    with st.expander("Generar Matriz 2^(5-1) (19 corridas)"):
-        if st.button("Generar Matriz"):
-            import itertools
-            import numpy as np
-            
-            esquinas = list(itertools.product([-1, 1], repeat=4))
-            datos = []
-            for fila in esquinas:
-                A, B, C, D = fila
-                E = A * B * C * D 
-                datos.append([A, B, C, D, E])
-                
-            for _ in range(3):
-                datos.append([0, 0, 0, 0, 0])
-                
-            df_matriz = pd.DataFrame(datos, columns=['A', 'B', 'C', 'D', 'E'])
-            df_matriz = df_matriz.sample(frac=1).reset_index(drop=True)
-            df_matriz.insert(0, 'Corrida', range(1, len(df_matriz) + 1))
-            
-            csv = df_matriz.to_csv(index=False).encode('utf-8')
-            st.success("¡Matriz generada!")
-            # Mostramos solo las primeras 5 filas para no hacer la barra gigante
-            st.dataframe(df_matriz.head(5), use_container_width=True) 
-            
-            st.download_button(
-                label="⬇️ Descargar Matriz (CSV)",
-                data=csv,
-                file_name='matriz_fraccionada_2_5-1.csv',
-                mime='text/csv',
-            )
-    with st.expander("Generar Matriz CCD (Superficie de Respuesta)"):
-        k_ccd = st.selectbox("N° de factores (k)", [2, 3, 4], index=1)
-        alfa_ccd = st.selectbox("Tipo de CCD", ["face", "rot"],
-                                format_func=lambda a: "Cara a cara (α=1)" if a == "face" else "Rotacional")
-        nc_ccd = st.number_input("Puntos centrales", 1, 8, 3)
-        if st.button("Generar Matriz CCD"):
-            df_ccd = ce_rsm.generar_matriz_ccd(k_ccd, alpha=alfa_ccd, n_centros=int(nc_ccd))
-            st.dataframe(df_ccd, use_container_width=True)
-            st.download_button("⬇️ Descargar CCD (CSV)",
-                               df_ccd.to_csv(index=False).encode('utf-8'),
-                               'matriz_ccd.csv', 'text/csv')
-    st.markdown("---")
+    if st.session_state.raw is not None:
+        st.markdown("---")
+        st.markdown("### Progreso")
+        stages = {
+            'upload': '1. Cargar archivo',
+            'preview': '2. Revisar matriz',
+            'encode': '3. Codificar / Descodificar',
+            'analysis_select': '4. Elegir analisis',
+            'results': '5. Resultados'
+        }
+        current = st.session_state.stage
+        for stage_key, stage_label in stages.items():
+            idx = list(stages.keys()).index(stage_key)
+            curr_idx = list(stages.keys()).index(current)
+            if stage_key == current:
+                st.markdown(f"<div style='background:#e3f2fd;padding:6px 10px;border-radius:6px;margin:2px 0;font-weight:bold;'>→ {stage_label}</div>", unsafe_allow_html=True)
+            elif idx < curr_idx:
+                st.markdown(f"<div style='color:#4caf50;padding:2px 0;'>✅ {stage_label}</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div style='color:#9e9e9e;padding:2px 0;'>⬜ {stage_label}</div>", unsafe_allow_html=True)
+        st.markdown("---")
 
-    # 2. CARGADOR DE ARCHIVOS
-    uploaded = st.file_uploader("Archivo Excel o CSV", type=['xlsx','csv'])
+    st.markdown("### Generar datos")
+    st.markdown("Necesitas crear un diseno experimental?")
+    st.link_button("Ir a Bioprocess Tool", "https://bioprocesstool.com/", use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### Contexto")
+    st.session_state.nombre = st.text_input("Proceso/Experimento", value=st.session_state.nombre, placeholder="Ej: Extraccion de proteina")
+    st.session_state.estudiante = st.text_input("Estudiante", value=st.session_state.estudiante)
+    st.session_state.curso = st.text_input("Curso/Asignatura", value=st.session_state.curso, placeholder="Ej: Diseno de Experimentos")
+
+
+# ============================================================
+# MAIN - FLUJO POR ETAPAS
+# ============================================================
+
+# ---------- ETAPA 1: CARGAR ARCHIVO ----------
+if st.session_state.stage == 'upload':
+    st.title("DOE Tool - Analisis Factorial y Superficie de Respuesta")
+
+    st.markdown("""
+    ## Bienvenido
+    Esta herramienta te permite analizar disenos experimentales factoriales (2^k) y de superficie de respuesta (CCD).
+
+    ### Flujo de trabajo:
+    1. **Carga tu matriz** de diseno (Excel o CSV)
+    2. **El programa detecta** si esta codificada o no
+    3. **Codifica o descodifica** segun necesites
+    4. **Elige el tipo de analisis** (Via 1, 2, 3 o CCD)
+    5. **Obtien resultados**: ANOVA, coeficientes, ecuacion, graficos
+    """)
+
+    uploaded = st.file_uploader("Sube tu archivo Excel o CSV", type=['xlsx', 'csv'])
+
     if uploaded:
         try:
             if uploaded.name.endswith('.xlsx'):
@@ -157,1471 +272,502 @@ with st.sidebar:
                 raw = pd.read_csv(uploaded)
             raw.columns = raw.columns.astype(str).str.strip()
             st.session_state.raw = raw
-            st.success(f"OK: {raw.shape[0]} filas x {raw.shape[1]} cols")
+
+            st.success(f"Archivo cargado: {raw.shape[0]} filas × {raw.shape[1]} columnas")
+
+            fact_cands, resp_cands, descartados = _detectar_columnas(raw)
+
+            if len(descartados) > 0:
+                st.info(f"Columnas descartadas (metadatos): {', '.join(descartados)}")
+
+            if len(fact_cands) == 0:
+                st.error("No se detectaron factores. Verifica que tus columnas numericas tengan 2 o 3 niveles.")
+            elif len(resp_cands) == 0:
+                st.error("No se detecto columna de respuesta.")
+            else:
+                st.session_state.stage = 'preview'
+                st.rerun()
+
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Error al cargar: {e}")
 
-    # 3. RESTO DE LA CONFIGURACIÓN (Solo si hay un archivo cargado)
-    if st.session_state.raw is not None:
-        raw = st.session_state.raw
-        st.markdown("### Columnas")
-        fact_cands, resp_cands, _ = _detectar_columnas(raw)
 
-        cols = st.multiselect("Factores", raw.columns.tolist(), default=fact_cands, key="mis_factores")
-        resp = st.multiselect("Respuesta(s)", raw.columns.tolist(), default=resp_cands, key="mi_respuesta")
+# ---------- ETAPA 2: PREVIEW ----------
+elif st.session_state.stage == 'preview':
+    st.title("2. Revisar Matriz")
 
-        # Deteccion temprana de CCD: si aplica, se ocultan las opciones de vía 2^k
-        es_ccd = ce_rsm.es_diseno_ccd(raw, cols) if cols else False
-        if es_ccd:
-            st.success("Diseno CCD detectado: se usara la ruta de Superficie de Respuesta. "
-                       "Las opciones de via, objetivo y especificacion no aplican.")
+    raw = st.session_state.raw
 
-        # --- PANEL PARA RENOMBRAR ---
-        mapping_nombres = {}
-        if len(cols) > 0:
-            with st.expander("✏️ Renombrar factores (opcional)"):
-                st.markdown("Si tus columnas se llaman A, B, C, D, puedes ponerles su nombre real aquí:")
-                for c in cols:
-                    nuevo = st.text_input(f"Nombre para '{c}':", value=c, key=f"rename_{c}")
-                    if nuevo.strip() != "" and nuevo.strip() != c:
-                        mapping_nombres[c] = nuevo.strip()
-        
-        # --- NUEVO: PANEL PARA RENOMBRAR LA RESPUESTA ---
-        mapping_resp = {}
-        if len(resp) > 0:
-            with st.expander("✏️ Renombrar respuesta (opcional)"):
-                for r in resp:
-                    nuevo_r = st.text_input(f"Nombre para '{r}':", value=r, key=f"rename_resp_{r}")
-                    if nuevo_r.strip() != "" and nuevo_r.strip() != r:
-                        mapping_resp[r] = nuevo_r.strip()
-        
-        # --- PANEL PARA CONFIGURAR NIVELES -1 / +1 ---
-        mapeos_niveles = {}      # real -> codificado
-        mapeos_inversos = {}     # codificado -> real (para graficos e informes)
-        if len(cols) > 0:
-            with st.expander("⚙️ Configurar Niveles (-1 / +1)", expanded=False):
-                st.markdown("Define qué valor real corresponde a cada nivel codificado.")
-                for c in cols:
-                    col_real = mapping_nombres.get(c, c)
-                    vals = list(dict.fromkeys(raw[c].dropna().tolist()))
-                    ya_codificado = set(vals).issubset({-1,0,1,-1.0,0.0,1.0})
-                    
-                    if ya_codificado:
-                        st.markdown(f"**{col_real}** (ya codificada)")
-                        c1, c2 = st.columns(2)
-                        v_lo = c1.number_input(f"Bajo (-1)", value=-1.0, key=f"real_low_{c}", format="%.6g")
-                        v_hi = c2.number_input(f"Alto (+1)", value=1.0, key=f"real_high_{c}", format="%.6g")
-                        v_mid_auto = (v_lo + v_hi) / 2.0
-                        usar_auto = st.checkbox(f"Centro automatico ({v_mid_auto:.4g})", value=True, key=f"auto_mid_{c}")
-                        if usar_auto:
-                            v_mid = v_mid_auto
-                        else:
-                            v_mid = st.number_input(f"Centro (0) manual", value=v_mid_auto, key=f"real_mid_{c}", format="%.6g")
-                        mapeos_niveles[col_real] = {v_lo: -1, v_mid: 0, v_hi: 1}
-                        mapeos_inversos[col_real] = {-1: v_lo, 0: v_mid, 1: v_hi}
-                        st.caption(f"→ Mapeo: {v_lo}→-1  {v_mid}→0  {v_hi}→+1")
-                        
-                    elif len(vals) == 3:
-                        v_bajo = st.selectbox(f"'{col_real}' - Nivel BAJO (-1):", vals, index=0, key=f"low_{c}")
-                        v_alto = st.selectbox(f"'{col_real}' - Nivel ALTO (+1):", [v for v in vals if v != v_bajo], index=0, key=f"high_{c}")
-                        v_mid = [v for v in vals if v != v_bajo and v != v_alto][0]
-                        st.caption(f"→ Centro (0): **{v_mid}**")
-                        mapeos_niveles[col_real] = {v_bajo: -1, v_mid: 0, v_alto: 1}
-                        mapeos_inversos[col_real] = {-1: v_bajo, 0: v_mid, 1: v_alto}
-                        
-                    elif len(vals) == 2:
-                        # Datos de 2 niveles: calcular centro automatico
-                        v_bajo = st.selectbox(f"'{col_real}' - Nivel BAJO (-1):", vals, index=0, key=f"low_{c}")
-                        v_alto = [v for v in vals if v != v_bajo][0]
-                        v_mid_auto = (v_bajo + v_alto) / 2 if isinstance(v_bajo, (int, float)) and isinstance(v_alto, (int, float)) else None
-                        if v_mid_auto is not None:
-                            usar_auto = st.checkbox(f"Centro automatico ({v_mid_auto:.4g})", value=True, key=f"auto_mid_{c}")
-                            if usar_auto:
-                                v_mid = v_mid_auto
-                            else:
-                                v_mid = st.number_input(f"Centro (0) manual", value=v_mid_auto, key=f"mid_{c}")
-                            mapeos_niveles[col_real] = {v_bajo: -1, v_mid: 0, v_alto: 1}
-                            mapeos_inversos[col_real] = {-1: v_bajo, 0: v_mid, 1: v_alto}
-                            st.caption(f"→ Mapeo: {v_bajo}→-1  {v_mid}→0  {v_alto}→+1")
-                        else:
-                            st.caption(f"→ Nivel ALTO (+1): **{v_alto}**")
-                            mapeos_niveles[col_real] = {v_bajo: -1, v_alto: 1}
-                            mapeos_inversos[col_real] = {-1: v_bajo, 1: v_alto}
-            st.markdown("---")
+    _info_box("Paso 2: Revision",
+              "Confirma que el programa detecto correctamente los factores y la respuesta.",
+              tipo='info')
 
-        if es_ccd:
-            via = ce_rsm.VIA_CCD
-            objetivo = "Maximizar la respuesta"
-            spec = None
+    fact_cands, resp_cands, _ = _detectar_columnas(raw)
+
+    corrida_opts = ['(Ninguna)'] + [c for c in raw.columns if any(x in str(c).lower() for x in ['corrida','run','orden','order','id'])]
+    corrida_sel = st.selectbox("Columna de Corrida (opcional):", corrida_opts, index=0)
+    st.session_state.corrida_col = None if corrida_sel == '(Ninguna)' else corrida_sel
+
+    st.markdown("### Factores")
+    factores = st.multiselect("Selecciona los factores:", raw.columns.tolist(), default=fact_cands, key="sel_factores")
+
+    st.markdown("### Respuesta")
+    respuesta = st.selectbox("Selecciona la respuesta:", raw.columns.tolist(),
+                              index=raw.columns.tolist().index(resp_cands[0]) if resp_cands else 0,
+                              key="sel_respuesta")
+
+    if len(factores) < 2:
+        st.warning("Selecciona al menos 2 factores.")
+    else:
+        st.session_state.factores = factores
+        st.session_state.respuesta = respuesta
+
+        es_cod = _es_codificada(raw, factores)
+        st.session_state.es_codificada = es_cod
+
+        cols_mostrar = []
+        if st.session_state.corrida_col:
+            cols_mostrar.append(st.session_state.corrida_col)
+        cols_mostrar.extend(factores)
+        cols_mostrar.append(respuesta)
+        st.dataframe(raw[cols_mostrar].head(15), use_container_width=True)
+
+        centros = _detectar_centros(raw, factores)
+        replicas = _detectar_replicas(raw, factores, respuesta)
+        st.markdown(f"""
+        **Resumen:**
+        - Factores: **{len(factores)}** ({', '.join(factores)})
+        - Filas: **{len(raw)}**
+        - Puntos centrales: **{centros}**
+        - Replicas puras: **{replicas}**
+        - Codificacion: **{'Codificada (-1, 0, +1)' if es_cod else 'NO codificada (valores reales)'}**
+        """)
+
+        sug_analisis, sug_msg = _sugerir_analisis(raw, factores, respuesta)
+        _info_box("Sugerencia", sug_msg, tipo='tip')
+
+        if st.button("Continuar a codificacion", type='primary', use_container_width=True):
+            st.session_state.stage = 'encode'
+            st.rerun()
+
+
+# ---------- ETAPA 3: CODIFICAR / DESCODIFICAR ----------
+elif st.session_state.stage == 'encode':
+    st.title("3. Codificar / Descodificar")
+
+    raw = st.session_state.raw
+    factores = st.session_state.factores
+    respuesta = st.session_state.respuesta
+    es_cod = st.session_state.es_codificada
+
+    if es_cod:
+        _info_box("Matriz codificada detectada",
+                  "Tus factores estan en escala codificada (-1, 0, +1). Introduce los valores reales.",
+                  tipo='info')
+    else:
+        _info_box("Matriz NO codificada detectada",
+                  "Tus factores estan en valores reales. Introduce los niveles bajo y alto.",
+                  tipo='info')
+
+    mapeos_niveles = {}
+    mapeos_inversos = {}
+
+    st.markdown("### Configurar niveles")
+
+    for f in factores:
+        vals = sorted(raw[f].dropna().unique().tolist())
+        st.markdown(f"**Factor: {f}**")
+
+        if es_cod:
+            c1, c2 = st.columns(2)
+            v_bajo = c1.number_input(f"Valor real para -1 (bajo) - {f}", value=0.0, key=f"real_low_{f}")
+            v_alto = c2.number_input(f"Valor real para +1 (alto) - {f}", value=100.0, key=f"real_high_{f}")
+            v_medio = (v_bajo + v_alto) / 2
+            st.caption(f"Centro (0) calculado: **{v_medio:.4f}**")
+            mapeos_niveles[f] = {v_bajo: -1, v_medio: 0, v_alto: 1}
+            mapeos_inversos[f] = {-1: v_bajo, 0: v_medio, 1: v_alto}
         else:
-            via = st.radio("Via", options=[ce.VIA_1, ce.VIA_2, ce.VIA_3], format_func=lambda v: f"{ce.VIA_INFO[v]['nombre']}")
-            objetivo = st.radio("Objetivo del análisis:", ["Maximizar la respuesta", "Minimizar la respuesta"], index=0)
-
-            use_spec = st.checkbox("Especificacion (target +/- tol)")
-            spec = None
-            if use_spec:
+            if len(vals) == 2:
+                v_bajo = vals[0]
+                v_alto = vals[1]
+                v_medio = (v_bajo + v_alto) / 2
+                st.info(f"Detectados 2 niveles: Bajo={v_bajo}, Alto={v_alto}. Centro: {v_medio:.4f}")
+            elif len(vals) == 3:
+                v_bajo, v_medio, v_alto = vals[0], vals[1], vals[2]
+                st.info(f"Detectados 3 niveles: Bajo={v_bajo}, Centro={v_medio}, Alto={v_alto}")
+            else:
                 c1, c2 = st.columns(2)
-                target = c1.number_input("Target", value=24.0)
-                tol = c2.number_input("Tolerancia", value=4.0)
-                spec = {'target': target, 'tol': tol}
+                v_bajo = c1.number_input(f"Nivel BAJO para {f}", value=float(min(vals)), key=f"low_{f}")
+                v_alto = c2.number_input(f"Nivel ALTO para {f}", value=float(max(vals)), key=f"high_{f}")
+                v_medio = (v_bajo + v_alto) / 2
+                st.caption(f"Centro calculado: **{v_medio:.4f}**")
 
-        st.markdown("### Contexto")
-        nombre = st.text_input("Proceso", "Analisis 2^k")
-        estudiante = st.text_input("Estudiante", "")
-        curso = st.text_input("Curso", "Asignacion")
+            mapeos_niveles[f] = {v_bajo: -1, v_medio: 0, v_alto: 1}
+            mapeos_inversos[f] = {-1: v_bajo, 0: v_medio, 1: v_alto}
 
-        simular_datos = False
-        if not es_ccd:
-            # --- PANEL DE SIMULACIÓN OPTIMIZADO ---
-            st.markdown("### 🧪 Simulador de Datos")
-            st.markdown("El programa generará los datos basándose en un modelo biológico predefinido.")
-            simular_datos = st.checkbox("Activar simulación (Ecuación + Ruido)")
-        
-            if simular_datos:
-                with st.expander("⚙️ Ver/Editar parámetros del modelo (Opcional)"):
-                    st.markdown("Estos coeficientes representan el comportamiento esperado según la literatura:")
-                    c1, c2 = st.columns(2)
-                    b0 = c1.number_input("Intercepto (β0)", value=2.5, key="sim_b0")
-                    bA = c2.number_input("Efecto A (Concentración)", value=0.6, key="sim_bA")
-                    bB = c1.number_input("Efecto B (Relación)", value=0.3, key="sim_bB")
-                    bC = c2.number_input("Efecto C (pH)", value=-0.5, key="sim_bC")
-                    bD = c1.number_input("Efecto D (Tiempo)", value=0.2, key="sim_bD")
-                    bE = c2.number_input("Efecto E (BSA)", value=-0.4, key="sim_bE")
-                    bAA = c1.number_input("Curvatura A²", value=-0.2, key="sim_bAA")
-                
-                    st.markdown("**Interacciones biológicas plausibles:**")
-                    c3, c4 = st.columns(2)
-                    bAC = c3.number_input("Interacción A*C", value=0.3, key="sim_bAC")
-                    bBE = c4.number_input("Interacción B*E", value=-0.2, key="sim_bBE")
+    st.session_state.mapeos_niveles = mapeos_niveles
+    st.session_state.mapeos_inversos = mapeos_inversos
 
-                st.markdown("**Ruido experimental (Error):**")
-                c5, c6 = st.columns(2)
-                ruido = c5.number_input("Desviación del ruido (σ)", value=0.3, key="sim_noise")
-                y_max = c6.number_input("Límite superior (Y máx)", value=5.0, key="sim_ymax")
-                y_min = 0.0
+    df_cod = raw.copy()
+    df_real = raw.copy()
 
-        # --- BOTÓN PROCESAR ---
-        if st.button("Procesar", type='primary'):
-            try:
-                # 1. Aplicar el renombrado
-                if mapping_nombres:
-                    raw = raw.rename(columns=mapping_nombres)
-                    cols = [mapping_nombres.get(c, c) for c in cols]
-                if mapping_resp:
-                    raw = raw.rename(columns=mapping_resp)
-                    resp = [mapping_resp.get(r, r) for r in resp]
-                rp = raw.copy()
-                rp.insert(0, 'Corrida_ID', range(1, len(rp) + 1))
-
-                # --- RAMA CCD: si el diseno tiene puntos axiales, va a superficie de respuesta ---
-                if cols and resp and ce_rsm.es_diseno_ccd(rp, cols):
-                    st.session_state.df_ccd_raw = rp
-                    st.session_state.factores_ccd = list(cols)
-                    st.session_state.respuesta_ccd = list(resp)
-                    st.session_state.stage = 'ccd_full'
-                    st.rerun()
-                
-                # 2. Aplicar los niveles manuales del estudiante
-                for f in cols:
-                    vals_orig = list(dict.fromkeys(rp[f].dropna().tolist()))
-                    ya_codificado = set(vals_orig).issubset({-1,0,1,-1.0,0.0,1.0})
-                    
-                    if ya_codificado:
-                        # Datos ya codificados: no se mapean, solo se guardan inversos
-                        pass
-                    elif f in mapeos_niveles:
-                        rp[f] = rp[f].map(mapeos_niveles[f])
-                    else:
-                        vals = list(dict.fromkeys(rp[f].dropna().tolist()))
-                        if len(vals) == 2:
-                            lo, hi = min(vals), max(vals)
-                            rp[f] = rp[f].map({lo: -1, hi: 1})
-                            if f not in mapeos_inversos:
-                                mapeos_inversos[f] = {-1: lo, 1: hi}
-                
-                # Guardar mapeos inversos para graficos e informes
-                st.session_state.mapeos_inversos = mapeos_inversos
-
-                # --- APLICAR SIMULACIÓN ---
-                if simular_datos and not es_ccd:
-                    rp['Y_simulado'] = (b0 + 
-                                      bA * rp[cols[0]] + 
-                                      bB * rp[cols[1]] + 
-                                      bC * rp[cols[2]] + 
-                                      bD * rp[cols[3]] + 
-                                      bE * rp[cols[4]] + 
-                                      bAA * (rp[cols[0]]**2) +
-                                      bAC * rp[cols[0]] * rp[cols[2]] +  # Interacción A*C
-                                      bBE * rp[cols[1]] * rp[cols[4]])   # Interacción B*E
-                    
-                    # Añadimos el ruido gaussiano a TODOS los puntos
-                    ruido_aleatorio = np.random.normal(0, ruido, len(rp))
-                    rp['Y_simulado'] += ruido_aleatorio
-                    
-                    rp['Y_simulado'] = np.clip(rp['Y_simulado'], y_min, y_max)
-                    rp[resp[0]] = rp['Y_simulado']
-                    rp = rp.drop(columns=['Y_simulado'])
-                
-                # 3. Convertir respuestas a numérico y preparar datos
-                for c in resp:
-                    rp[c] = pd.to_numeric(rp[c], errors='raise')
-                df = ce.preparar_datos(rp, cols, resp)
-
-                # 4. Guardar en el estado de la sesión y avanzar al Paso 1
-                st.session_state.df = df
-                st.session_state.via = via
-                st.session_state.objetivo = 'max' if objetivo == "Maximizar la respuesta" else 'min'
-                st.session_state.factores = cols
-                st.session_state.respuesta = resp
-                st.session_state.spec = spec
-                st.session_state.nombre = nombre
-                st.session_state.estudiante = estudiante
-                st.session_state.curso = curso
-                st.session_state.stage = 'design'
-                st.session_state.R_full = None
-                st.session_state.R_reduced = None
-                st.session_state.selected_terms = None
-                st.session_state.excel_bytes = None
-                st.session_state.word_bytes = None
-                st.session_state.figs_dict = None
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-# ---------- Main ----------
-if st.session_state.stage == 'upload':
-    st.title("DOE 2^k - Modo Minitab")
-    
-    # Si ya se cargó un archivo
-    if st.session_state.raw is not None:
-        st.markdown("## 📊 Vista de Datos")
-        
-        # Selector para alternar entre originales y simulados
-        opciones_vista = ["📁 Datos Originales (Excel)", "🧪 Datos Simulados"]
-        # Si la simulación está apagada, forzamos la vista original
-        if not ('simular_datos' in locals() and simular_datos):
-            opciones_vista = ["📁 Datos Originales (Excel)"]
-            
-        vista_seleccionada = st.radio("Selecciona qué datos quieres visualizar:", opciones_vista, horizontal=True)
-        
-        if vista_seleccionada == "🧪 Datos Simulados" and 'simular_datos' in locals() and simular_datos:
-            # Calcular Y usando los coeficientes actuales de la barra lateral
-            rp_temp = st.session_state.raw.copy()
-            for f in cols:
-                if f in mapeos_niveles:
-                    rp_temp[f] = rp_temp[f].map(mapeos_niveles[f])
-                else:
-                    vals = list(dict.fromkeys(rp_temp[f].dropna().tolist()))
-                    if len(vals) == 2:
-                        lo, hi = min(vals), max(vals)
-                        rp_temp[f] = rp_temp[f].map({lo: -1, hi: 1})
-            
-            # Aplicar ecuación
-            y_sim = (b0 + bA * rp_temp[cols[0]] + bB * rp_temp[cols[1]] + 
-                     bC * rp_temp[cols[2]] + bD * rp_temp[cols[3]] + 
-                     bE * rp_temp[cols[4]] + bAA * (rp_temp[cols[0]]**2))
-            
-            # Aplicar ruido
-            es_centro = rp_temp[cols].eq(0).all(axis=1)
-            ruido_aleatorio = np.random.normal(0, ruido, len(rp_temp))
-            y_sim.loc[~es_centro] += ruido_aleatorio[~es_centro]
-            y_sim = np.clip(y_sim, y_min, y_max)
-            
-            # Mostrar tabla
-            df_preview = rp_temp[cols].copy()
-            df_preview.insert(0, 'Corrida', range(1, len(df_preview) + 1))
-            df_preview['Y_Simulada'] = y_sim.round(3)
-            st.dataframe(df_preview, use_container_width=True)
-            st.info("💡 Esta tabla se actualiza si cambias los coeficientes o usas el dado en la barra lateral. Para usar estos datos en el análisis, presiona el botón azul **'Procesar'** en la barra lateral izquierda.")
-            
-        else:
-            # Mostrar tabla original
-            st.dataframe(st.session_state.raw, use_container_width=True)
-            if 'simular_datos' in locals() and simular_datos:
-                st.info("💡 Activa la opción 'Datos Simulados' arriba para ver los valores generados por la ecuación.")
-                
+    if es_cod:
+        for f in factores:
+            df_real[f] = _descodificar_factor(raw[f], mapeos_inversos[f][-1], mapeos_inversos[f][1])
+        df_cod = raw.copy()
     else:
-        # Pantalla de bienvenida original
-        st.markdown("""
-        ### Como funciona
+        for f in factores:
+            df_cod[f] = _codificar_factor(raw[f], mapeos_inversos[f][-1], mapeos_inversos[f][1])
+        df_real = raw.copy()
 
-        Esta app reproduce el flujo de Minitab para disenos factoriales 2^k:
-
-        1. **Diseno** - revisa la estructura
-        2. **Modelo completo** - ANOVA con todos los terminos, Pareto, semi-normal
-        3. **Refinar modelo** - TU decides que terminos quitar (aqui esta el esfuerzo)
-        4. **Diagnostico** - residuales, efectos principales, interacciones
-        5. **Reporte** - descarga tablas, graficos y plantilla Word
-
-        ### ¿En qué se parece a Minitab?
-
-        - **Interpretar** el Pareto y el semi-normal para decidir que terminos son reales
-        - **Seleccionar** terminos en el modelo reducido
-        - **Verificar** que los resultados tengan sentido
-        - **Diagnosticar** los residuales
-        - **Escribir tus conclusiones**
-
-        Al igual que en Minitab, la app te da los numeros, pero las decisiones son tuyas.
-        """)
-        st.info("Empieza subiendo un archivo en la barra lateral")
-    
-elif st.session_state.stage == 'design':
-    df = st.session_state.df
-    factores = st.session_state.factores
-    via = st.session_state.via
-    st.title("Paso 1 - Diseno experimental")
-    
-    n_grupos = df['Grupo'].nunique()
-    n_total = len(df)
-    n_esquinas = len(df[df['Curvatura']==0]) // n_grupos if n_grupos > 0 else len(df[df['Curvatura']==0])
-    n_centros = len(df[df['Curvatura']==1]) // n_grupos if n_grupos > 0 else len(df[df['Curvatura']==1])
-    
-    if via == ce.VIA_1:
-        expl = f"N = {n_total} = {n_esquinas} esquinas x {n_grupos} replicas puras"
-    elif via == ce.VIA_2:
-        expl = f"N = {n_total} = {n_esquinas + n_centros} puntos ({n_esquinas} esquinas + {n_centros} centros) x {n_grupos} bloque(s)"
-    else:
-        expl = f"N = {n_total} = {n_esquinas} esquinas (sin replicas)"
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Factores", len(factores))
-    c2.metric("N total", n_total)
-    c3.metric("Bloques" if via == ce.VIA_2 else "Replicas", n_grupos if via != ce.VIA_3 else 1)
-    c4.metric("Via", via)
-    
-    st.info(f"**De donde viene N:** {expl}")
-    
-    cond = df[df['Curvatura']==0][factores].drop_duplicates().reset_index(drop=True)
-    cond.insert(0, 'Condicion', range(1, len(cond)+1))
-    st.markdown("### Combinaciones del diseno")
-    st.dataframe(cond, use_container_width=True)
-
-
-    # --- NUEVO: MOSTRAR ALIAS ---
     st.markdown("---")
-    st.markdown("### 🕵️ Estructura de Alias (Confundimiento)")
-    st.markdown("El programa ha detectado automáticamente qué efectos comparten la misma columna matemática en este diseño fraccionado:")
-    df_alias = ce.generar_tabla_alias(df, factores)
-    st.dataframe(df_alias, use_container_width=True)
-    # ----------------------------
+    st.markdown("### Matrices disponibles")
 
-    # --- NUEVO: BOTONES DE NAVEGACIÓN ---
-    st.markdown("---")
     c1, c2 = st.columns(2)
-    
-    if c1.button("⬅️ Volver a Datos / Simulación", use_container_width=True):
-        st.session_state.stage = 'upload'
-        st.session_state.df = None # Limpiamos el dataframe para poder volver a procesar
-        st.session_state.R_full = None
-        st.rerun()
-        
-    if c2.button("Ir a Modelo completo ➡️", type='primary', use_container_width=True):
-        st.session_state.stage = 'full_model'
-        st.rerun()
+    with c1:
+        st.markdown("**Matriz Codificada (-1, 0, +1)**")
+        st.dataframe(df_cod[factores + [respuesta]].head(10), use_container_width=True)
+    with c2:
+        st.markdown("**Matriz con Valores Reales**")
+        st.dataframe(df_real[factores + [respuesta]].head(10), use_container_width=True)
 
-elif st.session_state.stage == 'full_model':
-    st.title("Paso 2 - Modelo completo")
-    df = st.session_state.df
-    factores = st.session_state.factores
-    via = st.session_state.via
+    st.markdown("### ¿Con cual matriz quieres hacer el analisis?")
+    eleccion = st.radio("Selecciona:", ["Codificada", "Valores Reales"], horizontal=True)
 
-    # --- Selector de tipo de modelo ---
-    if via == ce.VIA_2:
-        st.markdown("### Configuracion del modelo")
-        tipo_modelo = st.radio(
-            "Tipo de modelo:",
-            ["Automatico (estilo Minitab)", "Modelo completo (todos los terminos)", "Personalizado"],
-            index=0,
-            horizontal=True,
-            key="tipo_modelo_full"
-        )
-        
-        if tipo_modelo == "Automatico (estilo Minitab)":
-            terms = None
-        elif tipo_modelo == "Modelo completo (todos los terminos)":
-            terms = 'all'
+    if st.button("Continuar a seleccion de analisis", type='primary', use_container_width=True):
+        if eleccion == "Codificada":
+            st.session_state.df_work = df_cod.copy()
         else:
-            st.markdown("Selecciona los terminos a incluir:")
-            all_terms = [f for f in factores]
-            for i in range(len(factores)):
-                for j in range(i+1, len(factores)):
-                    all_terms.append(f"{factores[i]}*{factores[j]}")
-            
-            selected = []
-            c1, c2 = st.columns(2)
-            for i, t in enumerate(all_terms):
-                container = c1 if i < len(all_terms)//2 else c2
-                if container.checkbox(t, value=True, key=f"term_full_{t}"):
-                    selected.append(t)
-            terms = selected if selected else None
-    else:
-        terms = None
-    # ------------------------------------
+            st.session_state.df_work = df_real.copy()
+        st.session_state.stage = 'analysis_select'
+        st.rerun()
 
-    if st.session_state.R_full is None or st.session_state.get('last_terms') != str(terms):
-        with st.spinner("Calculando..."):
-            if via == ce.VIA_1:
-                R = ce.calcular_via1_con_terminos(df, factores, terms=terms)
-            elif via == ce.VIA_2:
-                R = ce.calcular_via2_con_terminos(df, factores, terms=terms)
-            else:
-                R = ce.calcular_via3(df, factores)
-            st.session_state.R_full = R
-            st.session_state.last_terms = str(terms)
-    R = st.session_state.R_full
 
-    st.markdown("### 1. Tabla ANOVA")
-    st.markdown("""
-    Esta tabla es el **corazón del análisis**. Compara la variación que produce cada factor (la "señal") contra el ruido del experimento.
-    
-    **¿Cómo leer las columnas?**
-    - **SS (Suma de Cuadrados):** La cantidad de variación que explica ese término. Números más grandes = mayor efecto.
-    - **GL (Grados de Libertad):** Cuánta información independiente tiene ese término (para factores en 2^k, siempre es 1).
-    - **MS (Cuadrado Medio):** Es la división de SS entre GL. Es la varianza promedio.
-    - **F (Estadístico F):** Es la división de MS del término entre MS del Error. Si F es grande, el efecto es real y no puro ruido.
-    - **p (Valor p):** La probabilidad de que ese efecto sea solo ruido. **Si p < 0.05, el término es estadísticamente significativo** (lo marcamos con ✅).
+# ---------- ETAPA 4: SELECCION DE ANALISIS ----------
+elif st.session_state.stage == 'analysis_select':
+    st.title("4. Elegir Tipo de Analisis")
+
+    raw = st.session_state.df_work
+    factores = st.session_state.factores
+    respuesta = st.session_state.respuesta
+    k = len(factores)
+
+    _info_box("Paso 4: Seleccion del analisis",
+              "Elige el tipo de analisis que mejor se adapte a tu diseno.",
+              tipo='info')
+
+    centros = _detectar_centros(raw, factores)
+    replicas = _detectar_replicas(raw, factores, respuesta)
+    esq = len(raw) - centros
+
+    st.markdown(f"""
+    **Caracteristicas de tu diseno:**
+    - Factores: **{k}** ({', '.join(factores)})
+    - Esquinas: **{esq}** | Centros: **{centros}** | Replicas: **{replicas}**
+    - Total filas: **{len(raw)}**
     """)
-    
-    st.dataframe(R['anova'].round(4), use_container_width=True)
-    st.markdown("### 2. Coeficientes del Modelo")
+
+    st.markdown("### Tipo de analisis")
+
+    opciones = {
+        'factorial_via1': f'Factorial Via 1: 2^{k} con replicas puras',
+        'factorial_via2': f'Factorial Via 2: 2^{k} con puntos centrales',
+        'factorial_via3': f'Factorial Via 3: 2^{k} no replicado (Lenth)',
+        'ccd': 'Superficie de Respuesta (CCD)',
+    }
+
+    analisis = st.radio("Selecciona:", list(opciones.keys()), format_func=lambda x: opciones[x], key="sel_analisis")
+    st.session_state.analisis_tipo = analisis
+
+    warnings = _validar_analisis_vs_diseno(raw, factores, respuesta, analisis)
+    if warnings:
+        for w in warnings:
+            _info_box("Advertencia", w, tipo='warning')
+
+    explicaciones = {
+        'factorial_via1': "**Via 1:** Diseno 2^k con replicas puras. Usa cuando tienes multiples replicas del diseno completo.",
+        'factorial_via2': "**Via 2:** Diseno 2^k con puntos centrales. Usa cuando tienes puntos centrales adicionales para probar curvatura.",
+        'factorial_via3': "**Via 3:** Diseno 2^k no replicado. Usa Lenth cuando NO tienes replicas ni centros.",
+        'ccd': "**CCD:** Superficie de Respuesta. Usa cuando tienes puntos axiales, esquinas y centros.",
+    }
+    st.markdown(explicaciones.get(analisis, ""))
+
+    if analisis.startswith('factorial') and k >= 4:
+        st.markdown("---")
+        st.markdown("### Modelo fraccionado?")
+        es_fracc = st.checkbox("Usar diseno fraccionado (2^(k-p))", value=False)
+        st.session_state.modelo_fraccionado = es_fracc
+        if es_fracc:
+            p = st.selectbox("Fraccion (p):", [1, 2, 3], index=0)
+            resolucion = k - p + 1
+            st.info(f"Diseno 2^({k}-{p}) = 2^{k-p} = {2**(k-p)} esquinas. Resolucion: {resolucion}.")
+            if resolucion < 3:
+                _info_box("Precaucion", f"Resolucion {resolucion} < III. Los efectos principales estaran confundidos.", tipo='warning')
+            st.session_state.resolucion = resolucion
+
+    if st.button("Continuar al analisis", type='primary', use_container_width=True):
+        if warnings and any("requiere" in w.lower() for w in warnings):
+            st.error("Corrige las advertencias antes de continuar.")
+        else:
+            st.session_state.stage = 'results'
+            st.rerun()
+
+
+# ---------- ETAPA 5: RESULTADOS ----------
+elif st.session_state.stage == 'results':
+    st.title("5. Resultados del Analisis")
+
+    raw = st.session_state.df_work
+    factores = st.session_state.factores
+    respuesta = st.session_state.respuesta
+    analisis = st.session_state.analisis_tipo
+
+    df = raw.copy()
+    df = df.rename(columns={respuesta: 'Y'})
+    df['Grupo'] = 'G1'
+    df['Curvatura'] = df[factores].apply(lambda r: 1 if all(abs(v) < 0.01 for v in r) else 0, axis=1)
+    for f in factores:
+        df[f] = pd.to_numeric(df[f], errors='coerce')
+
+    st.markdown("---")
+    st.markdown("### Configuracion del Modelo")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        modo = st.radio("Seleccion de terminos:", ["Automatico (Backward)", "Manual"], index=0, key="modo_sel")
+        st.session_state.modo_seleccion = 'backward' if 'Automatico' in modo else 'manual'
+    with c2:
+        alpha = st.number_input("Nivel de significancia (alpha):", min_value=0.01, max_value=0.5,
+                               value=0.05, step=0.01, format="%.2f", key="alpha_val")
+        st.session_state.alpha_modelo = alpha
+
+    _info_box("Que es alpha?",
+              f"alpha = {alpha} significa que aceptamos un {alpha*100:.0f}% de probabilidad de equivocarnos al declarar un efecto significativo.",
+              tipo='tip')
+
     try:
-        coef_df, fit_df = ce.generar_tabla_regresion(df, R)
-        # En Vía 3, ocultamos el Error Est. y el Valor p porque son NaN
-        if via == ce.VIA_3:
-            st.dataframe(coef_df[['Término', 'Coef']].round(4), use_container_width=True)
-            st.info("💡 En la Vía 3, el modelo está saturado (sin grados de libertad de error). Por ello, solo se muestran los coeficientes estimados; los errores estándar y los valores p no están definidos.")
-        else:
-            st.dataframe(coef_df.round(4), use_container_width=True)
+        if analisis == 'factorial_via1':
+            if st.session_state.modo_seleccion == 'backward':
+                R = ce.calcular_via1_con_terminos(df, factores, terms=None)
+            else:
+                ef_all = ce._calc_effects(df, factores, len(df[df['Curvatura']==0]) // df['Grupo'].nunique())
+                all_terms = [t for t in ef_all.keys() if len(t.split('*')) <= 2]
+                st.markdown("**Selecciona los terminos:**")
+                cols_manual = st.columns(3)
+                selected = []
+                for i, t in enumerate(all_terms):
+                    if cols_manual[i % 3].checkbox(t, value=True, key=f"term_{t}"):
+                        selected.append(t)
+                if len(selected) == 0:
+                    st.warning("Selecciona al menos un termino.")
+                    st.stop()
+                R = ce.calcular_via1_con_terminos(df, factores, terms=selected)
+
+        elif analisis == 'factorial_via2':
+            if st.session_state.modo_seleccion == 'backward':
+                R = ce.calcular_via2_con_terminos(df, factores, terms=None, alpha=alpha)
+            else:
+                ef_all = ce._calc_effects(df, factores, len(df[df['Curvatura']==0]) // df['Grupo'].nunique())
+                all_terms = [t for t in ef_all.keys() if len(t.split('*')) <= 2]
+                st.markdown("**Selecciona los terminos:**")
+                cols_manual = st.columns(3)
+                selected = []
+                for i, t in enumerate(all_terms):
+                    if cols_manual[i % 3].checkbox(t, value=True, key=f"term_{t}"):
+                        selected.append(t)
+                if len(selected) == 0:
+                    st.warning("Selecciona al menos un termino.")
+                    st.stop()
+                R = ce.calcular_via2_con_terminos(df, factores, terms=selected, alpha=alpha)
+
+        elif analisis == 'factorial_via3':
+            R = ce.calcular_via3(df, factores)
+
+        elif analisis == 'ccd':
+            R_rsm = ce_rsm.ajustar_ccd(df, factores, 'Y')
+            st.session_state.R_rsm = R_rsm
+            R = None
+
+        if analisis != 'ccd':
+            st.session_state.R = R
+
     except Exception as e:
-        st.warning(f"No se pudieron mostrar los coeficientes: {e}")
-    
-    st.write(f"**R2 = {R['R2']:.4f}**" + (f" | **R2 ajustado = {R['R2_adj']:.4f}**" if R.get('R2_adj') else ""))
-    st.caption("💡 **El R2** (de 0 a 1) indica qué porcentaje de la variabilidad total del proceso está explicada por el modelo. Un R2 mayor a 0.80 suele ser muy bueno.")
+        st.error(f"Error en el analisis: {e}")
+        import traceback
+        st.code(traceback.format_exc())
+        st.stop()
 
-    if via == ce.VIA_2:
-        st.markdown("### 2. Diseño y Curvatura (Exclusivo Vía 2)")
-        st.markdown("""
-        Como este diseño tiene un **punto central**, podemos evaluar si el comportamiento es curvo (no lineal).
-        - **Esquema del cubo**: Muestra dónde están ubicadas las 8 esquinas (±1) y el punto central (0,0,0).
-        - **Gráfico de Curvatura**: Compara la media del centro contra la media de las esquinas. Si el centro está muy alejado de la línea de las esquinas, hay curvatura.
-        """)
-        c1, c2 = st.columns(2)
-        fn_cub = ce._gen_cubo(R)
-        if fn_cub: c1.image(fn_cub, caption="Esquema del Diseño (Cubo 3D)", use_container_width=True)
-        
-        fn_curv = ce._gen_curvatura(R)
-        if fn_curv: c2.image(fn_curv, caption="Gráfico de Curvatura", use_container_width=True)
+    # MOSTRAR RESULTADOS
+    if analisis != 'ccd' and R is not None:
+        st.markdown("---")
+        st.markdown("## Resumen del Modelo")
 
-    st.markdown("### 3. Diagrama de Pareto")
-    # --- NUEVO: Mostrar métricas de error según la vía ---
-    if via == ce.VIA_3:
-        if R.get('lenth', {}).get('valido'):
-            c1, c2 = st.columns(2)
-            c1.metric("Pseudo Error Estándar (PSE)", f"{R['lenth']['PSE']:.4f}")
-            c2.metric("Margen de Error (ME)", f"{R['lenth']['ME']:.4f}")
-            t_critico = R['lenth']['ME'] / R['lenth']['PSE']
-            st.info(f"💡 **Umbral |t| (Método de Lenth):** Se calcula dividiendo el ME entre el PSE ({R['lenth']['ME']:.4f} / {R['lenth']['PSE']:.4f} ≈ **{t_critico:.2f}**). Las barras que superan este valor son significativas.")
-    else:
-        st.info(f"💡 **Umbral |t| (Error Puro):** Se calcula usando los {R['df_resid']} grados de libertad del error. El valor crítico es **{R['t_crit']:.2f}**. Las barras que superan este valor son significativas.")
-    # -----------------------------------------------------------
-    st.image(ce._gen_pareto(R), use_container_width=True)
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("R2", f"{R['R2']:.4f}")
+        col2.metric("R2 ajustado", f"{R['R2_adj']:.4f}")
+        col3.metric("Error estandar", f"{np.sqrt(R['MS_resid']):.4f}")
+        col4.metric("Terminos en modelo", len(R['terms_included']))
 
-    st.markdown("### 4. Grafico semi-normal (Daniel / Lenth)")
-    st.image(ce._gen_seminormal(R), use_container_width=True)
-    
-    # NUEVO: Leyenda de letras
-    leyenda = ", ".join([f"**{chr(65+i)}** = {f}" for i, f in enumerate(factores)])
-    st.caption(f"Leyenda de factores: {leyenda}")
+        _info_box("Que significa R2?",
+                  f"R2 = {R['R2']:.4f} indica que el modelo explica el {R['R2']*100:.2f}% de la variacion en la respuesta.",
+                  tipo='tip')
 
-    st.markdown("""
-    ### Cómo leer estos gráficos (¡Muy importante!)
-    
-    **1. Diagrama de Pareto**
-    - Cada barra horizontal es un término del modelo (factor o interacción).
-    - La **longitud** de la barra indica cuán grande es su efecto sobre la respuesta.
-    - Las barras **ROJAS** cruzan la línea vertical roja (el umbral) → son estadísticamente significativas.
-    - Las barras **AZULES** no la cruzan → no son significativas (probablemente ruido).
-    - El gráfico está ordenado de menor a mayor: la barra de arriba es el efecto más grande.
-    
-    **2. Gráfico Semi-normal (Daniel / Lenth)**
-    - Cada punto es un término del modelo.
-    - El **Eje X** representa los cuantiles teóricos (no te preocupes por el número exacto).
-    - El **Eje Y** representa el valor absoluto del efecto (|efecto|).
-    - Los puntos que siguen la línea diagonal son efectos pequeños, indistinguibles del ruido.
-    - Los puntos que se **DESPEGAN** de la línea diagonal son efectos grandes, probablemente reales.
-    - La línea horizontal roja es el umbral ME (Margen de Error). Los puntos por encima de ella son "activos".
-    """)
+        # ANOVA
+        st.markdown("---")
+        st.markdown("## Tabla ANOVA")
+        _info_box("Analisis de Varianza",
+                  "Descompone la variacion total en las fuentes que la explican. p < alpha = significativo.",
+                  tipo='info')
 
-    with st.expander("🤔 Preguntas de reflexion (toma notas para tu informe)"):
-        st.markdown("""
-        - ¿Coinciden las barras rojas del Pareto con los puntos despegados del semi-normal?
-        - ¿Cual es el termino con la barra mas larga?
-        - ¿Hay algun termino que parezca "marginal" (que este justo en el limite)?
-        """)
+        anova = R['anova'].copy()
+        for col in ['SS', 'MS', 'F', 'F_crit']:
+            if col in anova.columns:
+                anova[col] = anova[col].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "-")
+        for col in ['p']:
+            if col in anova.columns:
+                anova[col] = anova[col].apply(lambda x: f"{x:.6f}" if pd.notna(x) else "-")
 
-    c1, c2 = st.columns(2)
-    if c1.button("Volver a Diseno"): st.session_state.stage = 'design'; st.rerun()
-    if c2.button("Refinar modelo", type='primary'):
-        st.session_state.stage = 'refine'; st.rerun()
+        st.dataframe(anova, use_container_width=True)
 
-elif st.session_state.stage == 'refine':
-    st.title("Paso 3 - Refinar modelo")
-    
-    df = st.session_state.df
-    factores = st.session_state.factores
-    via = st.session_state.via
-    R_full = st.session_state.R_full
-    all_terms = list(R_full['effects'].keys())
+        # COEFICIENTES
+        st.markdown("---")
+        st.markdown("## Coeficientes del Modelo")
+        try:
+            coef_df, fit_df = ce.generar_tabla_regresion(df, R)
+            st.dataframe(coef_df.round(4), use_container_width=True)
+        except Exception as e:
+            st.warning(f"No se pudieron generar coeficientes: {e}")
 
-    # Explicaciones condicionales segun la via
-    if via == ce.VIA_3:
-        st.markdown("""
-        **En esta Vía 3, el método de Lenth ya ha hecho el trabajo por ti.**
-        
-        Como este diseño **no tiene réplicas**, no existe un "Error puro" tradicional para calcular los p-valores. Para solucionarlo, el programa toma todos los términos que son ruido, los junta y crea un **Error Pooled** (Error agrupado). Ese es el motor que permite calcular si los términos `[ACTIVO]` son realmente significativos.
-        
-        Por eso verás que los términos de `[RUIDO]` dicen **p=Pooled**. 
-        
-        *Nota importante:* En esta vía **no hay casillas para marcar o desmarcar**. El algoritmo ya decidió qué es activo y qué es ruido basándose en el umbral ME. Solo revisa la tabla y presiona el botón para avanzar al diagnóstico.
-        """)
-    else:
-        st.markdown("""
-        **Aqui construyes el modelo final.** 
-        - **Deja marcados** los terminos que identificaste como activos en el Pareto/semi-normal.
-        - **Desmarca** los terminos ruido.
-        - Luego presiona "Re-calcular".
-        """)
+        # ECUACION
+        st.markdown("---")
+        st.markdown("## Ecuacion de Regresion")
+        try:
+            eq = ce._ecuacion_str(R)
+            st.code(eq, language='text')
+            st.copy_button("Copiar ecuacion", eq, key="copy_eq")
+        except Exception as e:
+            st.warning(f"No se pudo generar ecuacion: {e}")
 
-    st.markdown("### Terminos disponibles")
-    selected = []
-    for term in all_terms:
-        e = R_full['effects'][term]
-        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
-        display_term = term.replace('*', ' x ')
-        
-        if via == ce.VIA_3:
-            activo = e.get('activo', False)
-            c1.write(f"{'[ACTIVO]' if activo else '[RUIDO]'} {display_term}")
-            if activo: selected.append(term)
-        else:
-            checked = c1.checkbox(display_term, value=True, key=f"chk_{term}")
-            if checked: selected.append(term)
-            
-        c2.write(f"Efecto: {e['efecto']:+.4f}")
-        p_val = e.get('p')
-        c3.write(f"p={p_val:.4f}" if pd.notna(p_val) else "p=Pooled" if via == ce.VIA_3 else "p=-")
+        # RANKING
+        st.markdown("---")
+        st.markdown("## Ranking de Efectos")
+        try:
+            ranking = ce.generar_tabla_balance_neto(R)
+            st.dataframe(ranking, use_container_width=True)
+        except Exception as e:
+            st.warning(f"No se pudo generar ranking: {e}")
 
-    if len(selected) == 0:
-        st.warning("Selecciona al menos 1 termino.")
-    else:
-        if via == ce.VIA_3:
-            if st.button("Continuar al Diagnostico", type='primary'):
-                st.session_state.R_reduced = R_full
-                st.session_state.selected_terms = selected
-                st.session_state.stage = 'diagnostics'
-                st.rerun()
-        else:
-            if st.button("Re-calcular con terminos seleccionados", type='primary'):
-                with st.spinner("Ajustando modelo reducido..."):
-                    try:
-                        if via == ce.VIA_1:
-                            R_red = ce.calcular_via1_con_terminos(df, factores, terms=selected)
-                        elif via == ce.VIA_2:
-                            R_red = ce.calcular_via2_con_terminos(df, factores, terms=selected)
-                        st.session_state.R_reduced = R_red
-                        st.session_state.selected_terms = selected
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+        # GRAFICOS
+        st.markdown("---")
+        st.markdown("## Graficos Diagnostico")
 
-    if st.session_state.R_reduced is not None:
-        R_red = st.session_state.R_reduced
-        st.markdown("### 2. ANOVA del modelo reducido (Final)")
-        st.markdown("""
-        Este es el ANOVA final, una vez que has eliminado el ruido. 
-        
-        **¿Qué cambió respecto al modelo completo?**
-        - Al quitar los términos no significativos, su variabilidad (SS y GL) pasa a formar parte del **Residual** (o del **Error pooled** si es Vía 3).
-        - Ahora los Grados de Libertad del error son más grandes, lo que hace que el análisis sea **más sensible** para detectar los efectos verdaderos.
-        - El **R2 ajustado** suele subir, porque el modelo es más simple y preciso.
-        """)
-        
-        st.dataframe(R_red['anova'].round(4), use_container_width=True)
-        
-        st.write(f"**R2 = {R_red['R2']:.4f}**" + (f" | **R2 ajustado = {R_red['R2_adj']:.4f}**" if R_red.get('R2_adj') else ""))
-        
-        with st.expander("🔬 Coeficientes e intervalos de confianza (Opcional)"):
-            if R_red['via'] in (ce.VIA_1, ce.VIA_2):
-                # Usar Statsmodels para las Vías con réplicas/bloques
-                coef_df, _ = ce.generar_tabla_regresion(df, R_red)
-                st.dataframe(coef_df.round(4), use_container_width=True)
+        tab1, tab2, tab3, tab4 = st.tabs(["Pareto", "Semi-normal", "Efectos Principales", "Interacciones"])
+
+        with tab1:
+            try:
+                fig = ce._gen_pareto(R)
+                st.pyplot(fig)
+                _info_box("Diagrama de Pareto", "Efectos ordenados por magnitud. La linea vertical es el valor critico.", tipo='tip')
+            except Exception as e:
+                st.warning(f"No se pudo generar Pareto: {e}")
+
+        with tab2:
+            try:
+                fig = ce._gen_seminormal(R)
+                st.pyplot(fig)
+                _info_box("Grafico Semi-normal", "Efectos significativos se desvian de la linea recta.", tipo='tip')
+            except Exception as e:
+                st.warning(f"No se pudo generar semi-normal: {e}")
+
+        with tab3:
+            try:
+                fig = ce._gen_main_effects(R)
+                st.pyplot(fig)
+            except Exception as e:
+                st.warning(f"No se pudieron generar efectos principales: {e}")
+
+        with tab4:
+            try:
+                fig = ce._gen_interactions(R)
+                st.pyplot(fig)
+            except Exception as e:
+                st.warning(f"No se pudieron generar interacciones: {e}")
+
+        # PREDICCION
+        st.markdown("---")
+        st.markdown("## Prediccion")
+        _info_box("Prediccion del modelo", "Introduce los niveles de los factores para predecir la respuesta.", tipo='info')
+
+        pred_cols = st.columns(len(factores))
+        niveles = {}
+        for i, f in enumerate(factores):
+            if f in st.session_state.mapeos_inversos and -1 in st.session_state.mapeos_inversos[f]:
+                mapeo = st.session_state.mapeos_inversos[f]
+                opts = [(-1, f"Bajo ({mapeo.get(-1, -1)})"), (0, f"Centro ({mapeo.get(0, 0)})"), (1, f"Alto ({mapeo.get(1, 1)})")]
+                sel = pred_cols[i].selectbox(f, opts, format_func=lambda x: x[1], key=f"pred_{f}")
+                niveles[f] = sel[0]
             else:
-                # Usar solo los coeficientes para la Vía 3 (saturada)
-                coef_df, _ = ce.generar_tabla_regresion(df, R_red)
-                st.dataframe(coef_df[['Término', 'Coef']].round(4), use_container_width=True)
-                st.info("💡 En la Vía 3 (método de Lenth), el modelo está saturado y no tiene grados de libertad de error. Por ello, no es posible calcular intervalos de confianza convencionales; solo se muestran los coeficientes estimados.")
+                niveles[f] = pred_cols[i].number_input(f, value=0.0, key=f"pred_{f}")
 
-        with st.expander("🤔 Preguntas de reflexion para tu informe"):
-            st.markdown("""
-            - ¿Todos los terminos que dejaste siguen siendo significativos (p < 0.05)?
-            - ¿El R2 ajustado subio respecto al modelo completo?
-            - Si un termino perdio significancia, ¿quitaste una interaccion importante?
-            """)
+        try:
+            y_pred = ce.predecir_y_combinacion(niveles, R)
+            st.success(f"**Respuesta predicha: {y_pred:.4f}**")
+        except Exception as e:
+            st.warning(f"No se pudo predecir: {e}")
 
-    c1, c2 = st.columns(2)
-    if c1.button("Volver a Modelo completo"): st.session_state.stage = 'full_model'; st.rerun()
-    if c2.button("Diagnostico", type='primary'):
-        st.session_state.stage = 'diagnostics'; st.rerun()
+        # ALIAS (fraccionado)
+        if st.session_state.modelo_fraccionado:
+            st.markdown("---")
+            st.markdown("## Estructura de Alias")
+            try:
+                alias_df = ce.generar_tabla_alias(factores, st.session_state.resolucion)
+                st.dataframe(alias_df, use_container_width=True)
+            except Exception as e:
+                st.warning(f"No se pudo generar alias: {e}")
 
-elif st.session_state.stage == 'diagnostics':
-    st.title("Paso 4 - Diagnostico")
-    df = st.session_state.df
-    R = st.session_state.R_reduced if st.session_state.R_reduced else st.session_state.R_full
+    elif analisis == 'ccd':
+        R_rsm = st.session_state.R_rsm
+        st.markdown("## Resultados CCD")
+        st.markdown("El analisis de Superficie de Respuesta (CCD) ajusta un modelo cuadratico completo.")
+        if R_rsm:
+            st.json(R_rsm)
 
-    st.markdown("### 1. Diagnostico de Residuales")
-    st.markdown("""
-    Los residuales son lo que el modelo **no** puede explicar. Para que el ANOVA sea confiable, deben cumplir 3 reglas:
-    - **(a) Normalidad**: En el primer gráfico, los puntos deben seguir la línea diagonal recta. Si se despegan en los extremos (forma de S), la normalidad falla.
-    - **(b) Homocedasticidad (Varianza constante)**: En el segundo gráfico, la nube de puntos debe ser pareja. Si se abre en forma de embudo o trompeta, la varianza no es constante.
-    - **(c) Independencia**: En el tercer gráfico, no debe haber tendencias (curvas, líneas rectas). Los puntos deben estar dispersos al azar.
-    """)
-    st.image(ce._gen_residuales(df, R), use_container_width=True)
-    with st.expander("🤔 Preguntas de reflexión (toma notas para tu informe)"):
-        st.markdown("""
-        - ¿Los puntos del gráfico (a) se pegan a la línea roja? 
-        - ¿La nube del gráfico (b) tiene forma de embudo o es pareja?
-        - ¿Ves alguna tendencia en el gráfico (c)?
-        - **Conclusión:** ¿Se cumplen los supuestos? (Si sí, los p-valores del ANOVA son 100% confiables).
-        """)
-
-    st.markdown("### 2. Efectos Principales")
-    st.markdown("""
-    Muestra cómo cambia la media de la respuesta (Y) cuando el factor pasa de su nivel bajo (-1) a su nivel alto (+1).
-    """)
-    st.image(ce._gen_main_effects(R, st.session_state.spec), use_container_width=True)
-    
-    # --- NUEVO: Tabla de Efectos Principales Detallada ---
-    st.markdown("#### Tabla Resumen de Efectos")
-    filas_ef = []
-    for f in st.session_state.factores:
-        low_val = R['main_effects'][f]['low']
-        high_val = R['main_effects'][f]['high']
-        eff = R['main_effects'][f]['eff']
-        filas_ef.append({
-            'Factor': f,
-            'Media Nivel Bajo (-1)': round(low_val, 4),
-            'Media Nivel Alto (+1)': round(high_val, 4),
-            'Efecto (+1 vs -1)': round(eff, 4)
-        })
-    st.dataframe(pd.DataFrame(filas_ef), use_container_width=True)
-    st.caption("✍️ **Para tu informe:** En la columna de interpretación, escribe qué significa cada efecto en tu proceso (ej. 'El soporte grande favorece la viabilidad').")
-    
-    # --- NUEVO: Tabla de Ranking de Mejores Condiciones ---
-    st.markdown("#### 🏆 Ranking de Condiciones Observadas (Top 5)")
-    st.markdown("""
-    Estas son las combinaciones que dieron los mejores resultados en el experimento. 
-    *(Ordenadas de mayor a menor según la media de Y)*
-    """)
-
-
-
-    # 1. Calcular medias por combinación
-    if 'Corrida_ID' in df.columns:
-        cond_medias = df[df['Curvatura']==0].groupby(st.session_state.factores, sort=False).agg(
-            Corrida=('Corrida_ID', 'first'),
-            Y=('Y', 'mean')
-        ).reset_index()
-    else:
-        cond_medias = df[df['Curvatura']==0].groupby(st.session_state.factores, sort=False)['Y'].mean().reset_index()
-        if 'Corrida' not in cond_medias.columns:
-            cond_medias.insert(0, 'Corrida', range(1, len(cond_medias)+1))
-
-    # NUEVO: Calcular la predicción del modelo y la diferencia
-    cond_medias['Y_Predicho'] = cond_medias.apply(
-        lambda row: ce.predecir_y_combinacion(row.to_dict(), R), axis=1
-    )
-    cond_medias['Diferencia'] = cond_medias['Y'] - cond_medias['Y_Predicho']
-
-    # 3. Ordenar y sacar el Top 5
-    es_min = st.session_state.get('objetivo', 'max') == 'min'
-    cond_medias = cond_medias.sort_values(by='Y', ascending=es_min).head(5).reset_index(drop=True)
-    
-    # 4. Construir la tabla
-    ranking_data = []
-    for idx, row in cond_medias.iterrows():
-        fila = {'Posición': idx + 1, 'Corrida': int(row['Corrida'])}
-        for f in st.session_state.factores:
-            val = row[f]
-            if val == -1: fila[f] = "Nivel Bajo (-1)"
-            elif val == 1: fila[f] = "Nivel Alto (+1)"
-            else: fila[f] = "Centro (0)"
-        fila['Media Real (Y)'] = round(row['Y'], 4)
-        fila['Predicción (Ecuación)'] = round(row['Y_Predicho'], 4)
-        fila['Diferencia (Residuo)'] = round(row['Diferencia'], 4)
-        ranking_data.append(fila)
-    
-    st.dataframe(pd.DataFrame(ranking_data), use_container_width=True)
-    st.caption("💡 **Media Real:** Promedio de las réplicas en el laboratorio. **Predicción:** Valor calculado con la ecuación de regresión. **Diferencia:** Si es pequeña, el modelo predice con precisión.")
-
-    with st.expander("🤔 Preguntas de reflexión (toma notas para tu informe)"):
-        st.markdown("""
-        - ¿Cuál es el gráfico con la pendiente más pronunciada? (Ese es el factor dominante).
-        - ¿Los signos de las pendientes coinciden con los efectos que viste en el Pareto?
-        - Si hay una especificación (banda verde), ¿qué niveles del factor te mantienen dentro de la spec?
-        - **En la tabla de Ranking:** ¿Qué factores se repiten en las primeras posiciones? ¿Qué combinación recomendarías?
-        """)
-
-    st.markdown("### 3. Interacciones")
-    st.markdown("""
-    Muestra si el efecto de un factor **depende** del nivel de otro factor.
-    - Líneas **paralelas**: No hay interacción (los factores actúan de forma independiente).
-    - Líneas que **se cruzan**: Interacción antagónica (el efecto de uno se invierte si cambias el nivel del otro).
-    - Líneas que **se separan**: Interacción sinérgica (los efectos se potencian).
-    """)
-
-    # --- NUEVO: Selector de orden de interacciones ---
-    todas_interacciones = [n for n in R['effects'] if len(n.split('*'))==2]
-    
-    if todas_interacciones:
-        orden_interacciones = st.multiselect(
-            "🛠️ Selecciona y ordena las interacciones a graficar (el orden de selección será el orden de los gráficos):",
-            options=todas_interacciones,
-            default=todas_interacciones, 
-            key="selector_interacciones"
-        )
-        st.session_state.orden_interacciones = orden_interacciones 
-    else:
-        orden_interacciones = []
-    # -------------------------------------------------
-
-
-    fns_int = ce._gen_interactions(R, custom_order=st.session_state.get('orden_interacciones', []))
-    
-    if fns_int:
-        for fn in fns_int:
-            if os.path.exists(fn):
-                st.image(fn, use_container_width=True)
-    else:
-        st.info("Ninguna interaccion significativa en el modelo.")
-
-
-    with st.expander("🤔 Preguntas de reflexión (toma notas para tu informe)"):
-        st.markdown("""
-        - ¿Las líneas son paralelas o no?
-        - Si se cruzan, ¿en qué punto sucede? ¿Qué implicación práctica tiene?
-        - ¿Conviene usar el mismo nivel del factor 2 sin importar el nivel del factor 1?
-        """)
-
-    if st.session_state.spec:
-        st.markdown("### 4. Cumplimiento de Especificacion")
-        st.markdown("""
-        Muestra qué combinaciones cumplen con la meta (banda verde). Verde = cumple, Rojo = no cumple.
-        """)
-        st.image(ce._gen_spec(df, R, st.session_state.spec), use_container_width=True)
-        with st.expander("🤔 Preguntas de reflexión (toma notas para tu informe)"):
-            st.markdown("""
-            - ¿Cuántas barras son verdes?
-            - ¿Qué combinación de niveles comparten todas las barras rojas?
-            - ¿El centro (0,0,0) cumple con la especificación?
-            """)
-    # --- NUEVO: Auditoría de Fórmulas ---
-    with st.expander("📐 Auditoría Técnica: Fórmulas Estadísticas Utilizadas"):
-        st.markdown("""
-        Esta aplicación se apoya en las librerías estándar de Python **Statsmodels** y **SciPy** para calcular los resultados presentados. El programa utiliza dos enfoques estadísticos según el diseño experimental:
-        
-        1. **Mínimos Cuadrados Ordinarios (OLS):** Utilizado para ajustar la regresión lineal y el ANOVA (Vías 1 y 2) a través de **Statsmodels**, minimizando la suma de los errores al cuadrado.
-        2. **Método de Lenth:** Utilizado en diseños sin réplicas (Vía 3) para estimar un Pseudo Error Estándar (PSE) a partir de la mediana de los efectos, usando **SciPy** para las distribuciones probabilísticas.
-        
-        A continuación, se detallan las fórmulas matemáticas que el programa utiliza internamente para calcular los resultados:
-        """)
-        
-        formulas = ce.obtener_formulas_utilizadas(R)
-        for nombre, formula in formulas.items():
-            st.markdown(f"**{nombre}:**")
-            st.code(formula, language="text")
-            
-        st.info("💡 **Nota sobre la nomenclatura:** En la fórmula del modelo de Statsmodels, el símbolo `~` significa 'en función de', los `+` suman términos, y los `:` indican interacciones entre variables. El término `Q(\"...\")` es la sintaxis de Statsmodels para manejar nombres de columnas.")
-    # ------------------------------------   
-
-    # --- NUEVO: GRÁFICO DE SUPERFICIE 3D Y DE INTERPOLACIÓN ---
+    # PANEL DE NAVEGACION FINAL
     st.markdown("---")
-    st.markdown("### 5. Superficie de Respuesta")
-    st.markdown("Este gráfico muestra cómo interactúan los dos primeros factores (A y C) manteniendo los demás fijos.")
-    
-    # Obtener el nombre de la respuesta (igual que antes)
-    if 'respuesta' in st.session_state and st.session_state.respuesta:
-        r_orig = st.session_state.respuesta[0]
-        resp_name = st.session_state.get(f"rename_resp_{r_orig}", r_orig)
-    else:
-        resp_name = 'Respuesta'
+    st.markdown("## Navegacion")
 
-    # Obtener los nombres reales de los factores
-    nombres_reales_factores = {}
-    if 'factores' in st.session_state and st.session_state.factores:
-        for f in st.session_state.factores:
-            nombres_reales_factores[f] = st.session_state.get(f"rename_{f}", f)
-            
-    # --- SELECTOR DE TIPO DE GRÁFICO ---
-    tipo_grafico = st.radio(
-        "Selecciona cómo quieres generar la superficie:",
-        ["📈 Modelo Teórico (Ecuación matemática)", "🗺️ Interpolación de Datos (Estilo Minitab)"],
-        horizontal=True
-    )
+    _info_box("Que deseas hacer ahora?",
+              "Puedes regresar a cualquier etapa anterior, cambiar la configuracion del modelo, "
+              "o comenzar con un nuevo archivo.", tipo='info')
 
-    if tipo_grafico == "📈 Modelo Teórico (Ecuación matemática)":
-        # Gráfico original basado en la ecuación
-        fn_surf, x_opt, y_opt, z_opt = ce._gen_superficie_3d(R, resp_name=resp_name, nombres_reales=nombres_reales_factores)
-        
-        if fn_surf and os.path.exists(fn_surf):
-            st.image(fn_surf, use_container_width=True)
-            if x_opt is not None:
-                st.success(f"**Óptimo predicho:** Se alcanza una respuesta máxima de **Y = {z_opt:.3f}** "
-                           f"en los niveles codificados: **{R['factores'][0]} = {x_opt:.2f}** y "
-                           f"**{R['factores'][2]} = {y_opt:.2f}**.")
-        else:
-            st.info("La superficie 3D requiere que el modelo incluya al menos dos efectos principales.")
+    nav_cols = st.columns(4)
 
-    else:
-        # Gráfico NUEVO de interpolación (Estilo Minitab)
-        # Asegúrate de que ce._gen_superficie_interpolada exista en calc_engine_plus.py
-        if 'factores' in st.session_state and st.session_state.factores:
-            f1_raw = st.session_state.factores[0]
-            f2_raw = st.session_state.factores[2]
-            
-            fn_interp = ce._gen_superficie_interpolada(
-                df, R, 
-                f1=f1_raw, 
-                f2=f2_raw, 
-                resp_name=resp_name
-            )
-            
-            if fn_interp and os.path.exists(fn_interp):
-                st.image(fn_interp, use_container_width=True)
-                st.info("💡 Este gráfico conecta tus 19 datos reales (puntos rojos). Fíjate cómo la curvatura central refleja tus puntos centrales experimentales.")
-            else:
-                st.warning("No se pudo generar el gráfico de interpolación con los datos actuales.")
-        else:
-            st.warning("Faltan factores para generar el gráfico.")
-
-    # --------------------------------------
-    
-    # --- BOTONES DE NAVEGACIÓN ---
-    c1, c2 = st.columns(2)
-    if c1.button("Volver a Refinar"): st.session_state.stage = 'refine'; st.rerun()
-    if c2.button("Avanzar al Reporte Final", type='primary'):
-        st.session_state.stage = 'report'; st.rerun()
-
-elif st.session_state.stage == 'report':
-    st.title("Paso 5 - Reporte final")
-    R = st.session_state.R_reduced if st.session_state.R_reduced else st.session_state.R_full
-    df = st.session_state.df
-    nombre = st.session_state.nombre
-    slug = nombre.replace(' ', '_').replace('/', '-')
-
-    st.markdown("### 1. Ecuacion de Regresion")
-    
-        # --- INICIO DEL CAMBIO ---
-    if R['via'] == ce.VIA_2:
-        st.write(f"**Media global del experimento** = {R['y_bar']:.4f}")
-        st.write(f"**Intercepto base de la ecuación (Bloque 1)** = {R.get('intercepto_bloques', R['y_bar']):.4f}")
-        st.caption("Nota: La ecuación incluye los coeficientes de los Bloques 2 al 5. El intercepto base representa al Bloque 1.")
-    else:
-        st.write(f"**Beta 0 (Media global / Intercepto)** = {R['y_bar']:.4f}")
-    # --- FIN DEL CAMBIO ---
-
-    eq = ce._ecuacion_str(R)
-    if eq: 
-        st.code(eq, language=None)
-    else: 
-        st.info("Ningun termino significativo. La ecuacion es solo la media (Beta 0).")
-
-    st.markdown("""
-    #### Cómo interpretar esta ecuación (¡Muy importante para el informe!)
-    Esta fórmula te permite **predecir** el valor de Y para cualquier combinación de niveles (-1 o +1).
-    
-    - **Beta 0 (Intercepto):** Es el valor promedio de Y cuando todos los factores están en 0 (el centro del diseño).
-    - **El signo (+ / -):** Indica la dirección. Si el coeficiente de `Temperatura` es `+13.10`, significa que al subir la temperatura de -1 a +1, la respuesta **sube** 13.10 unidades.
-    - **La magnitud:** Un número más grande (ignorando el signo) indica un factor con mayor impacto en el proceso.
-    - **Términos de interacción (ej. A x B):** Significa que el efecto de A no es constante, sino que cambia dependiendo del nivel de B.
-    
-    *Ejemplo de uso:* Si sustituyes los factores por -1 o +1 y haces la suma, obtienes el Y predicho para esa condición.
-    """)
-    
-    with st.expander("🤔 Preguntas de reflexión para tu informe"):
-        st.markdown("""
-        - ¿Los signos de los coeficientes de la ecuación coinciden con lo que viste en los efectos principales?
-        - Si tuvieras que recomendar una configuración para maximizar (o minimizar) Y, ¿qué valores (-1 o +1) le darías a los factores con coeficientes positivos y negativos?
-        - ¿Cómo usarías esta ecuación en la práctica industrial o biológica?
-        """)
-    st.markdown("### 2. Balance Neto de la Configuración Óptima")
-    # Solo mostrar si es un diseño sin bloques ni curvatura (como el Problema 1 o 3)
-    if not R.get('tiene_bloques') and not R.get('tiene_centro'):
-        balance_df = ce.generar_tabla_balance_neto(R, st.session_state.get('objetivo', 'max'))
-        st.dataframe(balance_df, use_container_width=True)
-    else:
-        st.info("El balance neto no se muestra para diseños con bloques o puntos centrales (use la ecuación de regresión).")
-
-    st.markdown("### 2. Generar Archivos")
-    if st.button("Generar descargas (Excel, Word, PNGs)", type='primary'):
-        with st.spinner("Generando reporte completo..."):
-            # 1. Generar Tablas
-            tablas = {'ANOVA': R['anova']}
-            Rf = st.session_state.R_full
-            if Rf:
-                ef_tab = pd.DataFrame([
-                    {'Termino': n, 'Efecto': e['efecto'], 'Coef': e['coef'],
-                     'p': e.get('p', np.nan),
-                     'En modelo final': 'Si' if n in (st.session_state.selected_terms or list(Rf['effects'].keys())) else 'No'}
-                    for n, e in Rf['effects'].items()
-                ])
-                tablas['Efectos_todos'] = ef_tab
-
-            # 2. Generar Excel
-            buf_xlsx = io.BytesIO()
-            with pd.ExcelWriter(buf_xlsx) as w:
-                for hoja, t in tablas.items():
-                    t.to_excel(w, sheet_name=hoja[:31], index=False)
-
-            # 3. GENERAR GRÁFICOS PRIMERO (para poder insertarlos en el Word)
-            figs = {
-                'Pareto': ce._gen_pareto(R),
-                'SemiNormal': ce._gen_seminormal(R),
-                'Residuales': ce._gen_residuales(df, R),
-                'EfectosPrincipales': ce._gen_main_effects(R, st.session_state.spec),
-            }
-
-            # Usar el orden elegido en el paso anterior
-
-            # Obtener el orden de forma segura
-            orden_guardado = st.session_state.get('orden_interacciones', None)
-            
-            # Si el orden guardado no existe o está vacío, usar el orden por defecto
-            if not orden_guardado:
-                orden_guardado = [n for n in R['effects'] if len(n.split('*'))==2]
-                
-            fns_int = ce._gen_interactions(R, custom_order=orden_guardado)
-
-            if fns_int: figs['Interacciones'] = fns_int
-            if st.session_state.via == ce.VIA_2:
-                fn_cub = ce._gen_cubo(R)
-                if fn_cub: figs['Cubo'] = fn_cub
-                fn_curv = ce._gen_curvatura(R)
-                if fn_curv: figs['Curvatura'] = fn_curv
-            if st.session_state.spec:
-                figs['Spec'] = ce._gen_spec(df, R, st.session_state.spec)
-
-            # 4. GENERAR WORD (Insertando todo en orden)
-            doc = Document()
-            doc.add_heading(f"Informe de Análisis 2^k - {nombre}", 0)
-            doc.add_paragraph(f"Estudiante: {st.session_state.estudiante}")
-            doc.add_paragraph(f"Curso: {st.session_state.curso}")
-            doc.add_paragraph(f"Fecha: {date.today().strftime('%Y-%m-%d')}")
-            
-            doc.add_heading("1. Diseño experimental", level=1)
-            doc.add_paragraph(f"Factores: {', '.join(st.session_state.factores)}")
-            doc.add_paragraph(f"N = {len(df)}")
-            doc.add_paragraph("Descripción del diseño: [Escribe aquí el contexto y los objetivos del experimento]")
-            
-            doc.add_heading("2. Análisis y resultados", level=1)
-
-            # Balance Neto para el Word
-            if not R.get('tiene_bloques') and not R.get('tiene_centro'):
-                doc.add_heading("2.1. Balance Neto de la Configuración Óptima", level=2)
-                doc.add_paragraph("La tabla muestra el desglose de ganancias y penalizaciones al configurar los factores en su nivel óptimo.")
-                balance_df = ce.generar_tabla_balance_neto(R, st.session_state.get('objetivo', 'max'))
-                _insertar_tabla_word(doc, balance_df)
-                
-                # Ajustamos la numeración del ANOVA para que sea el 2.2
-                doc.add_heading("2.2. ANOVA", level=2)
-            else:
-                doc.add_heading("2.1. ANOVA", level=2)
-            
-            _insertar_tabla_word(doc, R['anova'])
-            doc.add_paragraph(f"R2 = {R['R2']:.4f}" + (f" | R2 ajustado = {R['R2_adj']:.4f}" if R.get('R2_adj') else ""))
-            doc.add_paragraph("Interpretación del ANOVA: [Explica qué términos son significativos]")
-            
-            doc.add_heading("2.2. Diagrama de Pareto", level=2)
-            if 'Pareto' in figs and os.path.exists(figs['Pareto']):
-                doc.add_picture(figs['Pareto'], width=Inches(6))
-            doc.add_paragraph("Interpretación: [Explica qué barras cruzan el umbral y por qué]")
-            
-            doc.add_heading("2.3. Gráfico semi-normal (Lenth)", level=2)
-            if 'SemiNormal' in figs and os.path.exists(figs['SemiNormal']):
-                doc.add_picture(figs['SemiNormal'], width=Inches(6))
-            doc.add_paragraph("Interpretación: [Explica qué puntos se despegan de la línea de referencia]")
-            
-            doc.add_heading("2.4. Efectos principales", level=2)
-            # Generar tabla de efectos principales para el Word
-            ef_princ_data = []
-            for f in st.session_state.factores:
-                ef_princ_data.append({
-                    'Factor': f,
-                    'Media Nivel Bajo (-1)': round(R['main_effects'][f]['low'], 4),
-                    'Media Nivel Alto (+1)': round(R['main_effects'][f]['high'], 4),
-                    'Efecto (+1 vs -1)': round(R['main_effects'][f]['eff'], 4)
-                })
-            _insertar_tabla_word(doc, pd.DataFrame(ef_princ_data))
-            if 'EfectosPrincipales' in figs and os.path.exists(figs['EfectosPrincipales']):
-                doc.add_picture(figs['EfectosPrincipales'], width=Inches(6))
-            doc.add_paragraph("Interpretación de los efectos: [Escribe aquí qué significa cada efecto en el proceso]")
-
-            # --- NUEVO: Ranking Top 5 ---
-            doc.add_heading("2.5. Condiciones Recomendadas (Ranking)", level=2)
-
-
-
-            # Calcular el ranking para el Word
-            if 'Corrida_ID' in df.columns:
-                cond_medias_word = df[df['Curvatura']==0].groupby(st.session_state.factores, sort=False).agg(
-                    Corrida=('Corrida_ID', 'first'),
-                    Y=('Y', 'mean')
-                ).reset_index()
-            else:
-                cond_medias_word = df[df['Curvatura']==0].groupby(st.session_state.factores, sort=False)['Y'].mean().reset_index()
-                if 'Corrida' not in cond_medias_word.columns:
-                    cond_medias_word.insert(0, 'Corrida', range(1, len(cond_medias_word)+1))
-            
-            # NUEVO: Calcular predicción para el Word
-            cond_medias_word['Y_Predicho'] = cond_medias_word.apply(
-                lambda row: ce.predecir_y_combinacion(row.to_dict(), R), axis=1
-            )
-            cond_medias_word['Diferencia'] = cond_medias_word['Y'] - cond_medias_word['Y_Predicho']
-            
-            es_min = st.session_state.get('objetivo', 'max') == 'min'
-            cond_medias_word = cond_medias_word.sort_values(by='Y', ascending=es_min).head(5).reset_index(drop=True)
-
-            
-            # Preparar la tabla para Word
-            tabla_word = cond_medias_word.copy()
-            tabla_word.insert(0, 'Posición', range(1, len(tabla_word)+1))
-            
-            # Reemplazar -1 y 1 por texto más amigable
-            for f in st.session_state.factores:
-                tabla_word[f] = tabla_word[f].apply(lambda x: "-1" if x==-1 else "+1" if x==1 else "0")
-                
-            # Renombrar columnas
-            tabla_word = tabla_word.rename(columns={
-                'Y': 'Media Real', 
-                'Y_Predicho': 'Predicción',
-                'Diferencia': 'Diferencia'
-            })
-            
-            _insertar_tabla_word(doc, tabla_word)
-
-
-            doc.add_paragraph("Recomendación operativa: [Escribe aquí la combinación que sugieres y por qué]")
-            # -----------------------------
-
-            if 'Interacciones' in figs and figs['Interacciones']:
-                doc.add_heading("2.6. Interacciones", level=2)
-                for fn_int in figs['Interacciones']:
-                    if os.path.exists(fn_int):
-                        doc.add_picture(fn_int, width=Inches(6)) # Ancho ideal para Word
-                doc.add_paragraph("Interpretación: [Explica si las líneas son paralelas o se cruzan, y qué implican]")
-
-
-            if st.session_state.via == ce.VIA_2:
-                doc.add_heading("2.7. Curvatura y Diseño", level=2)
-                if 'Cubo' in figs and os.path.exists(figs['Cubo']):
-                    doc.add_picture(figs['Cubo'], width=Inches(4.5))
-                if 'Curvatura' in figs and os.path.exists(figs['Curvatura']):
-                    doc.add_picture(figs['Curvatura'], width=Inches(4.5))
-                doc.add_paragraph("Interpretación: [Explica si hay comportamiento no lineal]")
-
-            doc.add_heading("2.8. Diagnóstico de residuales", level=2)
-            if 'Residuales' in figs and os.path.exists(figs['Residuales']):
-                doc.add_picture(figs['Residuales'], width=Inches(6.5))
-            doc.add_paragraph("Interpretación: [Analiza los 3 supuestos: normalidad, homocedasticidad e independencia]")
-            
-            doc.add_heading("2.9. Ecuación de regresión", level=2)
-            if R['via'] == ce.VIA_2:
-                doc.add_paragraph(f"Media global del experimento = {R['y_bar']:.4f}")
-                doc.add_paragraph(f"Intercepto base de la ecuación (Bloque 1) = {R.get('intercepto_bloques', R['y_bar']):.4f}")
-            else:
-                doc.add_paragraph(f"Beta 0 = {R['y_bar']:.4f}")
-                
-            if eq: doc.add_paragraph(eq, style='Intense Quote')
-            doc.add_paragraph("Interpretación de los coeficientes: [Explica qué significa cada término en la ecuación]")
-       
-            doc.add_heading("3. Conclusiones", level=1)
-            doc.add_paragraph("1. [Conclusión 1]")
-            doc.add_paragraph("2. [Conclusión 2]")
-            
-            doc.add_heading("4. Recomendaciones operativas", level=1)
-            doc.add_paragraph("[Qué niveles fijar o evitar para optimizar el proceso]")
-            
-            buf_word = io.BytesIO()
-            doc.save(buf_word)
-
-            # 5. Guardar en el estado y preparar ZIP
-            st.session_state.excel_bytes = buf_xlsx.getvalue()
-            st.session_state.word_bytes = buf_word.getvalue()
-            st.session_state.figs_dict = figs
-        st.success("¡Reporte generado con tablas y gráficos insertados!")
-
-    if st.session_state.excel_bytes:
-        st.download_button("Descargar Tablas (Excel)", st.session_state.excel_bytes,
-                           file_name=f'{slug}_tablas.xlsx',
-                           mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-        st.download_button("Descargar Plantilla de informe (Word)", st.session_state.word_bytes,
-                           file_name=f'{slug}_plantilla.docx',
-                           mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-
-        buf_zip = io.BytesIO()
-        with zipfile.ZipFile(buf_zip, 'w') as z:
-            z.writestr(f'{slug}_tablas.xlsx', st.session_state.excel_bytes)
-            z.writestr(f'{slug}_plantilla.docx', st.session_state.word_bytes)
-            for name, fns in st.session_state.figs_dict.items():
-                if isinstance(fns, list):
-                    for fn in fns:
-                        if fn and os.path.exists(fn):
-                            z.write(fn, arcname=os.path.basename(fn))
-                elif fns and os.path.exists(fns):
-                    z.write(fns, arcname=os.path.basename(fns))
-
-
-        st.download_button("Descargar Todo en ZIP", buf_zip.getvalue(),
-                           file_name=f'{slug}_analisis.zip', mime='application/zip')
-
-    c1, c2 = st.columns(2)
-    if c1.button("Volver a Diagnostico"): st.session_state.stage = 'diagnostics'; st.rerun()
-    if c2.button("Empezar de nuevo"):
-        for k in list(st.session_state.keys()): del st.session_state[k]
-        st.rerun()
-
-
-# ==================== RAMA CCD (SUPERFICIE DE RESPUESTA) ====================
-def _tabla_word_ccd(doc, df_t):
-    """Inserta un DataFrame como tabla en Word (sin depender de Pt externo)."""
-    from docx.shared import Pt
-    cols = list(df_t.columns)
-    t = doc.add_table(rows=1, cols=len(cols))
-    t.style = 'Table Grid'
-    for i, cn in enumerate(cols):
-        cell = t.rows[0].cells[i]
-        cell.text = str(cn)
-        for p in cell.paragraphs:
-            for run in p.runs:
-                run.font.bold = True
-                run.font.size = Pt(8)
-    for _, row in df_t.iterrows():
-        cells = t.add_row().cells
-        for i, cn in enumerate(cols):
-            v = row[cn]
-            cells[i].text = '\u2014' if pd.isna(v) else (f"{v:.4f}" if isinstance(v, float) else str(v))
-            for p in cells[i].paragraphs:
-                for run in p.runs:
-                    run.font.size = Pt(8)
-    doc.add_paragraph()
-
-if st.session_state.stage == 'ccd_full':
-    st.title("Superficie de Respuesta (CCD) - Modelo completo")
-    rawc = st.session_state.df_ccd_raw
-    facc = st.session_state.factores_ccd
-    respc = st.session_state.respuesta_ccd
-    st.info(f"Diseno CCD detectado: {len(rawc)} corridas | Factores: {', '.join(facc)}")
-
-    if st.button("Ajustar modelos completos", type='primary'):
-        Rs = {}
-        for r in respc:
-            Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False)
-        st.session_state.R_ccd_full = Rs
-        st.session_state.stage = 'ccd_refine'
-        st.rerun()
-
-    if st.button("Volver a datos"):
-        st.session_state.stage = 'upload'
-        st.rerun()
-
-elif st.session_state.stage == 'ccd_refine':
-    st.title("CCD - Refinar modelo (eliminacion hacia atras)")
-    rawc = st.session_state.df_ccd_raw
-    facc = st.session_state.factores_ccd
-    respc = st.session_state.respuesta_ccd
-    alfa = st.number_input("Alfa para eliminacion (p > alfa se elimina)", 0.01, 0.20, 0.05, 0.01)
-
-    if st.button("Aplicar eliminacion hacia atras", type='primary'):
-        with st.spinner("Ajustando..."):
-            Rs = {}
-            for r in respc:
-                Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, alpha_elim=alfa, eliminar=True)
-            st.session_state.R_ccd = Rs
-
-    Rs = st.session_state.get('R_ccd')
-    if Rs:
-        for r, R in Rs.items():
-            st.markdown(f"### Respuesta: {r}")
-            st.dataframe(R['anova'].round(4), use_container_width=True)
-            c1, c2 = st.columns(2)
-            c1.metric("R2", f"{R['R2']*100:.2f}%")
-            c2.metric("R2 ajustado", f"{R['R2_adj']*100:.2f}%")
-            if R['lof']:
-                ok_lof = R['lof']['p'] > 0.05
-                st.write(f"Falta de ajuste: F = {R['lof']['F']:.3f}, p = {R['lof']['p']:.4f} "
-                         + ("-> no significativa (buena)" if ok_lof else "-> SIGNIFICATIVA (revisar modelo)"))
-            else:
-                st.caption("Sin replicas: no se puede calcular la falta de ajuste (igual que en el articulo).")
-            st.markdown("**Ecuacion (unidades reales):**")
-            st.code(R['eq_uncoded'], language=None)
-
-        c1, c2 = st.columns(2)
-        if c1.button("Volver a modelo completo"):
-            st.session_state.stage = 'ccd_full'
-            st.rerun()
-        if c2.button("Ir a Diagnosticos y graficos", type='primary'):
-            st.session_state.stage = 'ccd_diag'
+    with nav_cols[0]:
+        if st.button("⚙️ Cambiar modelo", use_container_width=True):
+            st.session_state.R = None
+            st.session_state.R_rsm = None
+            st.session_state.stage = 'results'
             st.rerun()
 
-elif st.session_state.stage == 'ccd_diag':
-    st.title("CCD - Diagnosticos, contornos y optimizacion")
-    Rs = st.session_state.get('R_ccd')
-    if not Rs:
-        st.error("Primero debes refinar el modelo (paso anterior).")
-        st.stop()
-    respc = list(Rs.keys())
-    facc = Rs[respc[0]]['factores']
-    figs = {}
+    with nav_cols[1]:
+        if st.button("📋 Cambiar analisis", use_container_width=True):
+            st.session_state.R = None
+            st.session_state.R_rsm = None
+            st.session_state.stage = 'analysis_select'
+            st.rerun()
 
-    for r, R in Rs.items():
-        st.markdown(f"### Residuales - {r}")
-        fn = ce_rsm.graf_residuales_ccd(R)
-        figs[f'resid_{r}'] = fn
-        st.image(fn, use_container_width=True)
+    with nav_cols[2]:
+        if st.button("🔢 Revisar matrices", use_container_width=True):
+            st.session_state.R = None
+            st.session_state.R_rsm = None
+            st.session_state.stage = 'encode'
+            st.rerun()
 
-    st.markdown("### Contornos individuales (cada uno con sus propios ejes)")
-    st.caption("1) Define los ejes de cada contorno y los del combinado. "
-               "2) Pulsa **Aplicar configuracion**. 3) Activa las casillas de mostrar, de arriba hacia abajo. "
-               "Para etiquetas con unidades (ej. Na2SeO3 (M)), usa 'Renombrar factores' en la barra lateral.")
-    with st.form("ccd_form_cfg"):
-        st.markdown("**A. Ejes de los contornos INDIVIDUALES** "
-                    "(independientes entre si; el/los factor(es) restante(s) queda(n) fijo(s)):")
-        ejes_ind = {}
-        for r in respc:
-            cx, cy = st.columns(2)
-            xi = cx.selectbox(f"Eje X - {r}", facc, index=0, key=f"xi_{r}")
-            yi_opts = [f for f in facc if f != xi]
-            yi = cy.selectbox(f"Eje Y - {r}", yi_opts, index=len(yi_opts) - 1, key=f"yi_{r}")
-            ejes_ind[r] = (xi, yi)
-
-        st.markdown("**B. Contorno COMBINADO** (elija los DOS factores de los ejes; "
-                    "el/los factor(es) restante(s) queda(n) fijo(s) automaticamente):")
-        c1f, c2f = st.columns(2)
-        f1 = c1f.selectbox("Eje X del combinado", facc, index=0, key="ccd_comb_x")
-        f2_opts = [f for f in facc if f != f1]
-        f2 = c2f.selectbox("Eje Y del combinado", f2_opts, index=len(f2_opts) - 1, key="ccd_comb_y")
-        fijo_sel = [f for f in facc if f not in (f1, f2)]
-        if len(fijo_sel) == 1:
-            st.caption(f"Combinado: varian X = **{f1}** e Y = **{f2}**; "
-                       f"queda fijo **{fijo_sel[0]}**.")
-        else:
-            st.caption(f"Combinado: varian X = **{f1}** e Y = **{f2}**; "
-                       f"quedan fijos: {', '.join(fijo_sel)}.")
-
-        st.markdown("**C. Valores de los factores cuando estan FIJOS** "
-                    "(se usan en los graficos donde ese factor NO esta en los ejes):")
-        fcols = st.columns(len(facc))
-        fijos = {}
-        for i, f in enumerate(facc):
-            codf = Rs[respc[0]]['coding'][f]
-            paso = max(codf['half'] / 10, 1e-6)
-            with fcols[i]:
-                fijos[f] = st.number_input(f, value=float(codf['c']),
-                                           step=paso, format="%.6g", key=f"fijo_{f}")
-        for f in facc:
-            usado = any(f in t.split('*') for R in Rs.values() for t in R['terms'])
-            if usado:
-                st.info(f"'{f}' esta en el modelo reducido: si algun grafico lo fija, "
-                        "ese valor SÍ afecta ese grafico.")
-            else:
-                st.caption(f"'{f}' fue eliminado del modelo como no significativo: "
-                           "fijarlo no afecta los resultados.")
-
-        estilo = st.radio("Estetica del grafico",
-                          ["Clasico (estilo articulo)", "Moderno (viridis)"],
-                          horizontal=True)
-        cmaps, niveles_txt = {}, {}
-        for r in respc:
-            cmaps[r] = st.selectbox(f"Colormap para {r}",
-                                    ["terrain", "RdYlGn", "jet", "viridis"],
-                                    index=0, key=f"cmap_{r}")
-            niveles_txt[r] = st.text_input(
-                f"Niveles de contorno para {r} (opcional, separados por comas)",
-                value="", key=f"niv_{r}",
-                placeholder="ej: 0,25,50,75,100,125,150,175,200,240")
-        st.form_submit_button("Aplicar configuracion", type='primary')
-
-    estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
-
-    # Punto de validacion: se lee del estado de la sesion (la seccion para
-    # editarlo esta al final de la pantalla). Asi la estrella aplica a los
-    # graficos aunque la seccion visual este despues de ellos.
-    punto = {f1: float(st.session_state.get(f"pv_{f1}", Rs[respc[0]]['coding'][f1]['c'])),
-             f2: float(st.session_state.get(f"pv_{f2}", Rs[respc[0]]['coding'][f2]['c']))}
-    mostrar_estrella = bool(st.session_state.get('ccd_mostrar_punto', True))
-
-    def _star_para(xi, yi):
-        if not mostrar_estrella:
-            return None
-        return {xi: punto.get(xi, fijos.get(xi)), yi: punto.get(yi, fijos.get(yi))}
-
-    # ---- Contornos individuales (se generan PRIMERO) ----
-    mostrar_cont = st.checkbox("Mostrar contornos individuales", key='ccd_mostrar_cont')
-    if mostrar_cont:
-        for r, R in Rs.items():
-            xi, yi = ejes_ind[r]
-            if xi == yi:
-                st.error(f"Contorno de {r}: el eje X y el Y son el mismo factor ('{xi}'). "
-                         "Elige dos factores distintos en el formulario (seccion A).")
-                continue
-            txt = niveles_txt.get(r, '').strip()
-            niv = None
-            if txt:
-                try:
-                    niv = sorted(float(x) for x in txt.replace(';', ',').split(',') if x.strip())
-                    if len(niv) < 2:
-                        niv = None
-                except ValueError:
-                    niv = None
-                    st.warning(f"Niveles de {r} no validos; se usaran niveles automaticos.")
-            figs[f'contorno_{r}'] = ce_rsm.graf_contorno_ccd(
-                R, xi, yi, estilo=estilo_key, cmap=cmaps.get(r),
-                niveles=(niv if niv else None), punto=_star_para(xi, yi), fijos=fijos)
-            st.image(figs[f'contorno_{r}'], use_container_width=True)
-
-    # ---- Probar un punto ----
-    ejes_comb_ok = (f1 != f2) and (f2 in [f for f in facc if f != f1])
-    if not ejes_comb_ok:
-        st.error(f"Los ejes del combinado (X = {f1}, Y = {f2}) no son validos. "
-                 "Vuelve al formulario, revisa la seccion B y pulsa 'Aplicar configuracion'.")
-
-    # ---- Contorno combinado (se genera DESPUES) ----
-    st.markdown("### Contorno combinado (region de interes)")
-    st.caption("Define los rangos aceptables de cada respuesta y pulsa **Aplicar metas**.")
-    rawc = st.session_state.df_ccd_raw
-    with st.form("ccd_form_metas"):
-        rangos = {}
-        cc1, cc2 = st.columns(2)
-        for i, r in enumerate(respc):
-            rmin = float(rawc[r].min()); rmax = float(rawc[r].max())
-            paso = max((rmax - rmin) / 20, 1e-6)
-            with (cc1 if i % 2 == 0 else cc2):
-                lo = st.number_input(f"{r} - minimo aceptable", value=rmin,
-                                     step=paso, format="%.6g", key=f"lo_{r}")
-                hi = st.number_input(f"{r} - maximo aceptable", value=rmax,
-                                     step=paso, format="%.6g", key=f"hi_{r}")
-            rangos[r] = (lo, hi)
-        st.form_submit_button("Aplicar metas", type='primary')
-
-    mostrar_comb = st.checkbox("Mostrar contorno combinado", key='ccd_mostrar_comb')
-    if mostrar_comb and ejes_comb_ok:
-        figs['superposicion'] = ce_rsm.graf_superposicion_ccd(
-            list(Rs.values()), rangos, f1, f2, punto=_star_para(f1, f2), fijos=fijos)
-        st.image(figs['superposicion'], use_container_width=True)
-
-    st.markdown("### Probar un punto (opcional)")
-    st.caption(f"Escribe los valores de **{f1}** (eje X del combinado) y **{f2}** (eje Y) "
-               "en unidades reales y pulsa **Aplicar punto**. La estrella se dibuja en los graficos "
-               "de arriba (contornos individuales y combinado) y las predicciones se muestran aqui. "
-               "Los factores fijos usan los valores del formulario de configuracion.")
-    with st.form("ccd_form_punto"):
-        pcols = st.columns(2)
-        for i, f in enumerate([f1, f2]):
-            c_def = Rs[respc[0]]['coding'][f]['c']
-            with pcols[i]:
-                st.number_input(f"{f} (unidades del experimento)", value=float(c_def),
-                                step=0.05, format="%.6g", key=f"pv_{f}")
-        st.form_submit_button("Aplicar punto")
-
-    punto_vivo = {f1: float(st.session_state.get(f"pv_{f1}", Rs[respc[0]]['coding'][f1]['c'])),
-                  f2: float(st.session_state.get(f"pv_{f2}", Rs[respc[0]]['coding'][f2]['c']))}
-    mcols = st.columns(len(respc))
-    for i, (r, R) in enumerate(Rs.items()):
-        pfull = {f: fijos.get(f, R['coding'][f]['c']) for f in R['factores']}
-        pfull.update(punto_vivo)
-        with mcols[i]:
-            st.metric(f"Prediccion de {r} en el punto", f"{ce_rsm.predecir_ccd(R, pfull):.3f}")
-    st.checkbox("Mostrar estrella en los graficos", value=True, key='ccd_mostrar_punto')
-
-    st.markdown("### Optimizacion (opcional)")
-    st.caption("Configura los objetivos y pulsa **Aplicar objetivos**; "
-               "luego usa **Optimizar ahora** cuando quieras. No afecta los graficos.")
-    with st.form("ccd_form_obj"):
-        objetivos = {}
-        for r in respc:
-            rlo, rhi = rangos[r]
-            paso = max((rhi - rlo) / 20, 1e-6)
-            tipo = st.selectbox(f"Objetivo de {r}", ["max", "min", "target"],
-                                format_func=lambda t: {"max": "Maximizar", "min": "Minimizar",
-                                                       "target": "Apuntar a un target"}[t],
-                                key=f"obj_{r}")
-            o = {'tipo': tipo, 'lo': rlo, 'hi': rhi}
-            if tipo == 'target':
-                o['target'] = st.number_input(f"Target de {r}",
-                                              value=float((rlo + rhi) / 2),
-                                              step=paso, format="%.6g", key=f"tgt_{r}")
-            objetivos[r] = o
-        st.form_submit_button("Aplicar objetivos", type='primary')
-
-    if st.button("Optimizar ahora"):
-        opt = ce_rsm.optimizar_ccd(list(Rs.values()), objetivos)
-        st.session_state.opt_ccd = opt if opt is not None else 'SIN_SOLUCION'
-    opt = st.session_state.get('opt_ccd')
-    if opt == 'SIN_SOLUCION':
-        st.warning("No existe ningun punto que cumpla todas las metas a la vez.")
-    elif opt:
-        pred_txt = " | ".join(f"{k} = {v:.3f}" for k, v in opt['predicciones'].items())
-        st.success(f"Mejor punto (deseabilidad = {opt['deseabilidad']:.3f}): "
-                   f"{opt['punto']}  ->  {pred_txt}")
-
-
-    st.session_state.figs_ccd = figs
-    c1, c2 = st.columns(2)
-    if c1.button("Volver a Refinar"):
-        st.session_state.stage = 'ccd_refine'
-        st.rerun()
-    if c2.button("Ir a Reporte", type='primary'):
-        st.session_state.stage = 'ccd_report'
-        st.rerun()
-
-elif st.session_state.stage == 'ccd_report':
-    st.title("CCD - Reporte final")
-    Rs = st.session_state.get('R_ccd')
-    figs = st.session_state.get('figs_ccd', {})
-    nombre = st.session_state.get('nombre', 'Analisis CCD')
-
-    if not Rs:
-        st.error("No hay modelo refinado. Vuelve al paso anterior.")
-        st.stop()
-
-    if st.button("Generar informe Word", type='primary'):
-        doc = Document()
-        doc.add_heading(f"Informe de Superficie de Respuesta (CCD) - {nombre}", 0)
-        doc.add_paragraph(f"Fecha: {date.today().strftime('%Y-%m-%d')}")
-        doc.add_paragraph(f"Factores: {', '.join(Rs[list(Rs.keys())[0]]['factores'])}")
-        for r, R in Rs.items():
-            doc.add_heading(f"Respuesta: {r}", level=1)
-            doc.add_paragraph(f"R2 = {R['R2']:.4f} | R2 ajustado = {R['R2_adj']:.4f}")
-            if R['lof']:
-                doc.add_paragraph(f"Falta de ajuste: F = {R['lof']['F']:.3f}, p = {R['lof']['p']:.4f}")
-            doc.add_heading("ANOVA", level=2)
-            _tabla_word_ccd(doc, R['anova'].round(4))
-            doc.add_heading("Ecuacion de regresion (unidades reales)", level=2)
-            doc.add_paragraph(R['eq_uncoded'])
-        doc.add_heading("Graficos", level=1)
-        for key, fn in figs.items():
-            if fn and os.path.exists(fn):
-                doc.add_heading(key.replace('_', ' '), level=2)
-                doc.add_picture(fn, width=Inches(6))
-        buf_word = io.BytesIO()
-        doc.save(buf_word)
-        st.download_button("Descargar informe (Word)", buf_word.getvalue(),
-                           f"{nombre.replace(' ', '_')}_ccd.docx",
-                           "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-
-    c1, c2 = st.columns(2)
-    if c1.button("Volver a Diagnosticos"):
-        st.session_state.stage = 'ccd_diag'
-        st.rerun()
-    if c2.button("Empezar de nuevo"):
-        st.session_state.stage = 'upload'
-        st.rerun()
+    with nav_cols[3]:
+        if st.button("📁 Nuevo archivo", use_container_width=True):
+            st.session_state.R = None
+            st.session_state.R_rsm = None
+            st.session_state.raw = None
+            st.session_state.df_work = None
+            st.session_state.stage = 'upload'
+            st.rerun()
