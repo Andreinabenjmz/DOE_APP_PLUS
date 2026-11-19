@@ -104,9 +104,8 @@ def _backward_elimination(df, ycol, factores, alpha=0.05):
             # interaccion que permanece en el modelo. Las interacciones y
             # cuadrados si se pueden quitar libremente.
             partes = t.split('*')
-            if len(partes) == 1:          # efecto principal: respetar jerarquia
-                usado = any(('*' in ot) and (ot.split('*')[0] != ot.split('*')[1]) and
-                            (partes[0] in ot.split('*')) for ot in terms if ot != t)
+            if len(partes) == 1:  # efecto principal: respetar jerarquia con interacciones y cuadrados
+                usado = any(('*' in ot) and (partes[0] in ot.split('*')) for ot in terms if ot != t)
                 if usado:
                     continue
             # cuadrados e interacciones: libres
@@ -139,9 +138,12 @@ def ajustar_ccd(df_raw, factores, ycol, alpha_elim=0.05, eliminar=True):
     m = smf.ols(fml, data=df).fit()
 
     # ANOVA tipo II
-    an = anova_lm(m, typ=2).reset_index().rename(
+    an = anova_lm(m, typ=3).reset_index().rename(
         columns={'index': 'Fuente', 'sum_sq': 'SS', 'df': 'GL', 'F': 'F', 'PR(>F)': 'p'})
-    an['Sig'] = ['OK' if (pd.notna(p) and p < 0.05) else '-' for p in an['p']]
+    an = an[an['Fuente'] != 'Intercept'].copy()
+    an['MS'] = an['SS'] / an['GL']
+    an = an[['Fuente', 'SS', 'GL', 'MS', 'F', 'p']]
+    an['Sig'] = ['OK' if (pd.notna(p) and p < 0.05) else ('-' if pd.isna(p) else 'NO') for p in an['p']]
 
     # Lack of Fit (solo si hay replicas en algun punto del diseno)
     grupos = df_raw.groupby(factores)[ycol]
@@ -457,5 +459,5 @@ def es_diseno_ccd(raw, factores):
     if np.any(hi == lo):
         return False
     Xc = 2 * (X - lo) / (hi - lo) - 1          # normalizar a [-1, 0, 1]
-    axiales = ((np.abs(Xc) > 1e-9).sum(axis=1) == 1).any()   # fila tipo (±a,0,...,0)
+    axiales = ((np.abs(Xc) > 1e-5).sum(axis=1) == 1).any()
     return bool(axiales) and len(raw) > 2 ** len(factores)
