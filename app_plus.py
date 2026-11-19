@@ -58,10 +58,7 @@ for k, v in {
 def _detectar_columnas(raw):
     factores, respuestas, descartar = [], [], []
     id_names = {'run','corrida','corrida_id','id','n_corrida','numero_corrida',
-                'obs','observacion','index','unnamed: 0',
-                'run order','std order','run type','order','tipo','type',
-                'block','bloque','order_run','orden','orden corrida',
-                'orden estandar','stdorder','runorder'}
+                'obs','observacion','index','unnamed: 0'}
     resp_exact = {'y', 'response', 'respuesta', 'resp'}
     resp_hints = ['rep', 'replica', 'block', 'bloque']
 
@@ -196,38 +193,23 @@ with st.sidebar:
                         mapping_resp[r] = nuevo_r.strip()
         
         # --- PANEL PARA CONFIGURAR NIVELES -1 / +1 ---
-        mapeos_niveles = {}      # real -> codificado
-        mapeos_inversos = {}     # codificado -> real (para graficos e informes)
-        if len(cols) > 0:
+        mapeos_niveles = {}
+        if len(cols) > 0 and not es_ccd:
             with st.expander("⚙️ Configurar Niveles (-1 / +1)", expanded=False):
-                st.markdown("Define qué valor real corresponde a cada nivel codificado.")
+                st.markdown("Elige qué nivel corresponde al **bajo (-1)** y cuál al **alto (+1)**.")
                 for c in cols:
                     col_real = mapping_nombres.get(c, c)
+                    # CORRECCIÓN AQUÍ: Usamos `c` para leer el excel, no `col_real`
                     vals = list(dict.fromkeys(raw[c].dropna().tolist()))
-                    ya_codificado = set(vals).issubset({-1,0,1,-1.0,0.0,1.0})
                     
-                    if ya_codificado:
-                        st.markdown(f"**{col_real}** (ya codificada)")
-                        c1, c2 = st.columns(2)
-                        v_lo = c1.number_input(f"Bajo (-1)", value=-1.0, key=f"real_low_{c}", format="%.6g")
-                        v_hi = c2.number_input(f"Alto (+1)", value=1.0, key=f"real_high_{c}", format="%.6g")
-                        # Centro calculado automaticamente
-                        v_mid_auto = (v_lo + v_hi) / 2.0
-                        usar_auto = st.checkbox(f"Centro automatico ({v_mid_auto:.4g})", value=True, key=f"auto_mid_{c}")
-                        if usar_auto:
-                            v_mid = v_mid_auto
-                        else:
-                            v_mid = st.number_input(f"Centro (0) manual", value=v_mid_auto, key=f"real_mid_{c}", format="%.6g")
-                        mapeos_niveles[col_real] = {v_lo: -1, v_mid: 0, v_hi: 1}
-                        mapeos_inversos[col_real] = {-1: v_lo, 0: v_mid, 1: v_hi}
-                        st.caption(f"→ Mapeo: {v_lo}→-1  {v_mid}→0  {v_hi}→+1")
+                    if set(vals).issubset({-1,0,1,-1.0,0.0,1.0}):
+                        continue
                         
-                    elif len(vals) == 2:
+                    if len(vals) == 2:
                         v_bajo = st.selectbox(f"'{col_real}' - Nivel BAJO (-1):", vals, index=0, key=f"low_{c}")
                         v_alto = [v for v in vals if v != v_bajo][0]
                         st.caption(f"→ Nivel ALTO (+1): **{v_alto}**")
                         mapeos_niveles[col_real] = {v_bajo: -1, v_alto: 1}
-                        mapeos_inversos[col_real] = {-1: v_bajo, 1: v_alto}
                         
                     elif len(vals) == 3:
                         v_bajo = st.selectbox(f"'{col_real}' - Nivel BAJO (-1):", vals, index=0, key=f"low_{c}")
@@ -235,7 +217,6 @@ with st.sidebar:
                         v_mid = [v for v in vals if v != v_bajo and v != v_alto][0]
                         st.caption(f"→ Centro (0): **{v_mid}**")
                         mapeos_niveles[col_real] = {v_bajo: -1, v_mid: 0, v_alto: 1}
-                        mapeos_inversos[col_real] = {-1: v_bajo, 0: v_mid, 1: v_alto}
             st.markdown("---")
 
         if es_ccd:
@@ -312,24 +293,15 @@ with st.sidebar:
                 
                 # 2. Aplicar los niveles manuales del estudiante
                 for f in cols:
-                    vals_orig = list(dict.fromkeys(rp[f].dropna().tolist()))
-                    ya_codificado = set(vals_orig).issubset({-1,0,1,-1.0,0.0,1.0})
-                    
-                    if ya_codificado:
-                        # Datos ya codificados: no se mapean, solo se guardan inversos
-                        pass
-                    elif f in mapeos_niveles:
+                    if f in mapeos_niveles:
                         rp[f] = rp[f].map(mapeos_niveles[f])
+                    elif set(rp[f].dropna().unique()).issubset({-1,0,1,-1.0,0.0,1.0}):
+                        continue
                     else:
                         vals = list(dict.fromkeys(rp[f].dropna().tolist()))
                         if len(vals) == 2:
                             lo, hi = min(vals), max(vals)
                             rp[f] = rp[f].map({lo: -1, hi: 1})
-                            if f not in mapeos_inversos:
-                                mapeos_inversos[f] = {-1: lo, 1: hi}
-                
-                # Guardar mapeos inversos para graficos e informes
-                st.session_state.mapeos_inversos = mapeos_inversos
 
                 # --- APLICAR SIMULACIÓN ---
                 if simular_datos and not es_ccd:
@@ -514,49 +486,15 @@ elif st.session_state.stage == 'full_model':
     factores = st.session_state.factores
     via = st.session_state.via
 
-    # --- Selector de tipo de modelo ---
-    if via == ce.VIA_2:
-        st.markdown("### Configuracion del modelo")
-        tipo_modelo = st.radio(
-            "Tipo de modelo:",
-            ["Automatico (estilo Minitab)", "Modelo completo (todos los terminos)", "Personalizado"],
-            index=0,
-            horizontal=True,
-            key="tipo_modelo_full"
-        )
-        
-        if tipo_modelo == "Automatico (estilo Minitab)":
-            terms = None
-        elif tipo_modelo == "Modelo completo (todos los terminos)":
-            terms = 'all'
-        else:
-            st.markdown("Selecciona los terminos a incluir:")
-            all_terms = [f for f in factores]
-            for i in range(len(factores)):
-                for j in range(i+1, len(factores)):
-                    all_terms.append(f"{factores[i]}*{factores[j]}")
-            
-            selected = []
-            c1, c2 = st.columns(2)
-            for i, t in enumerate(all_terms):
-                container = c1 if i < len(all_terms)//2 else c2
-                if container.checkbox(t, value=True, key=f"term_full_{t}"):
-                    selected.append(t)
-            terms = selected if selected else None
-    else:
-        terms = None
-    # ------------------------------------
-
-    if st.session_state.R_full is None or st.session_state.get('last_terms') != str(terms):
+    if st.session_state.R_full is None:
         with st.spinner("Calculando..."):
             if via == ce.VIA_1:
-                R = ce.calcular_via1_con_terminos(df, factores, terms=terms)
+                R = ce.calcular_via1_con_terminos(df, factores, terms=None)
             elif via == ce.VIA_2:
-                R = ce.calcular_via2_con_terminos(df, factores, terms=terms)
+                R = ce.calcular_via2_con_terminos(df, factores, terms=None)
             else:
                 R = ce.calcular_via3(df, factores)
             st.session_state.R_full = R
-            st.session_state.last_terms = str(terms)
     R = st.session_state.R_full
 
     st.markdown("### 1. Tabla ANOVA")
