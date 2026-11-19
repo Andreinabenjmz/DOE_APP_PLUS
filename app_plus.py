@@ -287,7 +287,7 @@ with st.sidebar:
 
     st.markdown("### Generar datos")
     st.markdown("Necesitas crear un diseno experimental?")
-    st.link_button("Ir a Bioprocess Tool", "https://bioprocesstool.com/", use_container_width=True)
+    st.link_button("Ir a Bioprocess Tool", "https://bioprocesstools.com/doe-generator/", use_container_width=True)
 
     st.markdown("---")
     st.markdown("### Contexto")
