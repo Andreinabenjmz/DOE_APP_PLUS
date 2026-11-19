@@ -374,7 +374,6 @@ def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
 
     MS_r = ss_r / df_r
 
-    # Insertar filas de agrupacion ANTES de calcular F y p
     # Reconstruir rows con filas de agrupacion
     new_rows = []
 

@@ -208,19 +208,19 @@ with st.sidebar:
                     
                     if ya_codificado:
                         st.markdown(f"**{col_real}** (ya codificada)")
-                        c1, c2, c3 = st.columns(3)
+                        c1, c2 = st.columns(2)
                         v_lo = c1.number_input(f"Bajo (-1)", value=-1.0, key=f"real_low_{c}", format="%.6g")
                         v_hi = c2.number_input(f"Alto (+1)", value=1.0, key=f"real_high_{c}", format="%.6g")
-                        v_mid = None
-                        if 0 in vals or 0.0 in vals:
-                            v_mid = c3.number_input(f"Centro (0)", value=0.0, key=f"real_mid_{c}", format="%.6g")
-                        mapeos_niveles[col_real] = {v_lo: -1, v_hi: 1}
-                        if v_mid is not None:
-                            mapeos_niveles[col_real][v_mid] = 0
-                        mapeos_inversos[col_real] = {-1: v_lo, 1: v_hi}
-                        if v_mid is not None:
-                            mapeos_inversos[col_real][0] = v_mid
-                        st.caption(f"→ Mapeo: {v_lo}→-1  {f'{v_mid}→0  ' if v_mid is not None else ''}{v_hi}→+1")
+                        # Centro calculado automaticamente
+                        v_mid_auto = (v_lo + v_hi) / 2.0
+                        usar_auto = st.checkbox(f"Centro automatico ({v_mid_auto:.4g})", value=True, key=f"auto_mid_{c}")
+                        if usar_auto:
+                            v_mid = v_mid_auto
+                        else:
+                            v_mid = st.number_input(f"Centro (0) manual", value=v_mid_auto, key=f"real_mid_{c}", format="%.6g")
+                        mapeos_niveles[col_real] = {v_lo: -1, v_mid: 0, v_hi: 1}
+                        mapeos_inversos[col_real] = {-1: v_lo, 0: v_mid, 1: v_hi}
+                        st.caption(f"→ Mapeo: {v_lo}→-1  {v_mid}→0  {v_hi}→+1")
                         
                     elif len(vals) == 2:
                         v_bajo = st.selectbox(f"'{col_real}' - Nivel BAJO (-1):", vals, index=0, key=f"low_{c}")
@@ -232,14 +232,7 @@ with st.sidebar:
                     elif len(vals) == 3:
                         v_bajo = st.selectbox(f"'{col_real}' - Nivel BAJO (-1):", vals, index=0, key=f"low_{c}")
                         v_alto = st.selectbox(f"'{col_real}' - Nivel ALTO (+1):", [v for v in vals if v != v_bajo], index=0, key=f"high_{c}")
-                        # Valor medio calculado automaticamente, editable
-                        v_auto = (v_bajo + v_alto) / 2 if isinstance(v_bajo, (int, float)) and isinstance(v_alto, (int, float)) else [v for v in vals if v != v_bajo and v != v_alto][0]
-                        usar_auto = st.checkbox(f"Usar medio automatico ({v_auto})", value=True, key=f"auto_mid_{c}")
-                        if usar_auto:
-                            v_mid = v_auto
-                        else:
-                            v_mid_opts = [v for v in vals if v != v_bajo and v != v_alto]
-                            v_mid = v_mid_opts[0] if len(v_mid_opts) == 1 else st.selectbox(f"Centro (0):", v_mid_opts, key=f"mid_{c}")
+                        v_mid = [v for v in vals if v != v_bajo and v != v_alto][0]
                         st.caption(f"→ Centro (0): **{v_mid}**")
                         mapeos_niveles[col_real] = {v_bajo: -1, v_mid: 0, v_alto: 1}
                         mapeos_inversos[col_real] = {-1: v_bajo, 0: v_mid, 1: v_alto}
