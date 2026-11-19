@@ -9,6 +9,7 @@ import itertools
 import warnings
 from datetime import date
 import statsmodels.formula.api as smf
+import statsmodels.api as sm
 from scipy import stats
 import matplotlib
 matplotlib.use('Agg')
@@ -185,86 +186,280 @@ def calcular_via1_con_terminos(df, factores, terms=None):
     return R
 
 # ---------- Via 2 con soporte para terminos ----------
-def calcular_via2_con_terminos(df, factores, terms=None):
+# ---------- Funciones de seleccion de modelo (estilo Minitab) ----------
+def _term_to_formula(term):
+    """Convierte 'A*B' a 'Q("A"):Q("B")' para statsmodels."""
+    if '*' in term:
+        return ':'.join(f'Q("{f}")' for f in term.split('*'))
+    return f'Q("{term}")'
+
+def _evaluar_interacciones_individualmente(df, factores, alpha=0.05):
+    """
+    Evalua cada interaccion doble individualmente contra el modelo base de solo principales.
+    Devuelve dict {term: {'SS':..., 'F':..., 'p':...}}.
+    """
+    base_parts = [_term_to_formula(f) for f in factores]
+    base_formula = 'Q("Y") ~ ' + ' + '.join(base_parts)
+
+    resultados = {}
+    for i in range(len(factores)):
+        for j in range(i+1, len(factores)):
+            f1, f2 = factores[i], factores[j]
+            term = f"{f1}*{f2}"
+
+            parts = base_parts + [f'Q("{f1}"):Q("{f2}")']
+            formula = 'Q("Y") ~ ' + ' + '.join(parts)
+            try:
+                m = smf.ols(formula, data=df).fit()
+                aov = sm.stats.anova_lm(m, typ=1)
+                ss_int = aov.loc[f'Q("{f1}"):Q("{f2}")', 'sum_sq']
+                df_int = aov.loc[f'Q("{f1}"):Q("{f2}")', 'df']
+                ms_int = ss_int / df_int
+                mse = m.mse_resid
+                df_err = m.df_resid
+                F_val = ms_int / mse
+                p_val = stats.f.sf(F_val, df_int, df_err)
+                resultados[term] = {'SS': ss_int, 'F': F_val, 'p': p_val, 'df_err': df_err}
+            except Exception:
+                resultados[term] = {'SS': 0, 'F': 0, 'p': 1.0, 'df_err': 0}
+    return resultados
+
+def seleccionar_modelo_minitab(df, factores, alpha=0.05):
+    """
+    Seleccion automatica de modelo al estilo Minitab (stepwise forward):
+    1. Modelo base = todos los efectos principales
+    2. Evalua interacciones dobles contra el modelo actual
+    3. Incluye la mas significativa si p < alpha
+    4. Re-evalua las restantes contra el nuevo modelo
+    5. Repite hasta que ninguna sea significativa
+    Devuelve lista de terminos seleccionados.
+    """
+    terms = list(factores)
+    all_ints = []
+    for i in range(len(factores)):
+        for j in range(i+1, len(factores)):
+            all_ints.append(f"{factores[i]}*{factores[j]}")
+
+    remaining = list(all_ints)
+    while remaining:
+        best_p = 1.0
+        best_term = None
+
+        parts = [_term_to_formula(t) for t in terms]
+        base_formula = 'Q("Y") ~ ' + ' + '.join(parts) if parts else 'Q("Y") ~ 1'
+
+        for term in remaining:
+            f1, f2 = term.split('*')
+            formula = base_formula + f' + Q("{f1}"):Q("{f2}")'
+            try:
+                m = smf.ols(formula, data=df).fit()
+                aov = sm.stats.anova_lm(m, typ=1)
+                key = f'Q("{f1}"):Q("{f2}")'
+                if key in aov.index:
+                    ss = aov.loc[key, 'sum_sq']
+                    df_t = aov.loc[key, 'df']
+                    ms = ss / df_t
+                    mse = m.mse_resid
+                    df_err = m.df_resid
+                    F_val = ms / mse
+                    p_val = stats.f.sf(F_val, df_t, df_err)
+                    if p_val < best_p:
+                        best_p = p_val
+                        best_term = term
+            except Exception:
+                pass
+
+        if best_p < alpha and best_term is not None:
+            terms.append(best_term)
+            remaining.remove(best_term)
+        else:
+            break
+
+    return terms
+
+def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
+    """
+    Calcula ANOVA estilo Minitab para disenos 2^k con centros.
+
+    terms:
+        None  -> seleccion automatica al estilo Minitab (stepwise forward)
+        'all' -> incluye todos los terminos de orden <= 2
+        lista -> terminos personalizados
+    """
     k = len(factores); n_b = df['Grupo'].nunique(); N = len(df)
     Nf = len(df[df['Curvatura']==0]) // n_b if n_b > 0 else len(df[df['Curvatura']==0])
     Nc = N - Nf; G = df['Y'].sum(); y = G/N
-    
+
     esq = df[df['Curvatura']==0]; cen = df[df['Curvatura']==1]
     SS_t = (df['Y']**2).sum() - G**2/N
     bt = df.groupby('Grupo')['Y'].sum(); sz = df.groupby('Grupo').size()
     SS_b = (bt**2/sz).sum() - G**2/N
     df_b = n_b - 1
+
+    # Calcular todos los efectos (para graficos y ranking)
     ef_all = _calc_effects(df, factores, Nf)
+
+    # Seleccion de terminos
     if terms is None:
+        terms = seleccionar_modelo_minitab(df, factores, alpha)
+    elif terms == 'all':
         terms = [t for t in ef_all.keys() if len(t.split('*')) <= 2]
+
     ef = {t: ef_all[t] for t in terms if t in ef_all}
     yf = esq['Y'].mean(); yc = cen['Y'].mean()
     SS_c = Nf*Nc/(Nf+Nc)*(yf-yc)**2
-    SS_m = SS_b + sum(e['SS'] for e in ef.values()) + SS_c
-    SS_r = SS_t - SS_m
-    if SS_r <= 0:
-        SS_r = 1e-5  # Forzamos un error mínimo positivo para evitar F negativas
-    df_r = N - 1 - (df_b + len(ef) + 1)
-    if df_r < 1: raise ValueError(f"df_resid={df_r}<1")
-    MS_r = SS_r/df_r
-    
-    # --- CORRECCIÓN PARA EVITAR DIVISIÓN POR CERO ---
+
+    # Ajustar modelo con statsmodels
+    parts = [_term_to_formula(t) for t in terms]
+    formula = 'Q("Y") ~ ' + ' + '.join(parts) if parts else 'Q("Y") ~ 1'
     if df_b > 0:
-        MS_b = SS_b/df_b
-        F_b = MS_b/MS_r
-        p_b = stats.f.sf(F_b, df_b, df_r)
-    else:
-        MS_b = np.nan
-        F_b = np.nan
-        p_b = np.nan
-        
-    MS_c = SS_c; F_c = MS_c/MS_r; p_c = stats.f.sf(F_c, 1, df_r)
-    for e in ef.values():
-        e['MS']=e['SS']; e['F']=e['MS']/MS_r; e['p']=stats.f.sf(e['F'],1,df_r)
-        
+        formula = 'Q("Y") ~ Q("Grupo") + ' + formula.split('~')[1].strip()
+    formula += ' + Q("Curvatura")'
+
+    mfit = smf.ols(formula, data=df).fit()
+    aov_sm = sm.stats.anova_lm(mfit, typ=1)
+
+    # Construir ANOVA estilo Minitab
     rows = []
+
+    # Bloques
+    MS_b = F_b = p_b = np.nan
     if df_b > 0:
-        rows.append(('Bloques', SS_b, df_b, MS_b, F_b, p_b))
-        
-    for n_, e in ef.items(): rows.append((n_, e['SS'], 1, e['MS'], e['F'], e['p']))
-    rows.append(('Curvatura', SS_c, 1, MS_c, F_c, p_c))
-    rows.append(('Residual', SS_r, df_r, MS_r, np.nan, np.nan))
+        ss_b = aov_sm.loc['Q("Grupo")', 'sum_sq'] if 'Q("Grupo")' in aov_sm.index else 0
+        df_b_sm = aov_sm.loc['Q("Grupo")', 'df'] if 'Q("Grupo")' in aov_sm.index else df_b
+        MS_b = ss_b / df_b_sm if df_b_sm > 0 else np.nan
+        rows.append(('Bloques', ss_b, df_b_sm, MS_b, np.nan, np.nan))
+
+    # Efectos principales
+    for f in factores:
+        if f in terms:
+            key = f'Q("{f}")'
+            if key in aov_sm.index:
+                ss = aov_sm.loc[key, 'sum_sq']
+                df_t = aov_sm.loc[key, 'df']
+                rows.append((f, ss, df_t, np.nan, np.nan, np.nan))
+
+    # Interacciones 2-Way
+    for t in terms:
+        if '*' in t and len(t.split('*')) == 2:
+            f1, f2 = t.split('*')
+            key = f'Q("{f1}"):Q("{f2}")'
+            if key in aov_sm.index:
+                ss = aov_sm.loc[key, 'sum_sq']
+                df_t = aov_sm.loc[key, 'df']
+                rows.append((t, ss, df_t, np.nan, np.nan, np.nan))
+
+    # Curvatura
+    key_c = 'Q("Curvatura")'
+    if key_c in aov_sm.index:
+        ss_c_sm = aov_sm.loc[key_c, 'sum_sq']
+        df_c_sm = aov_sm.loc[key_c, 'df']
+    else:
+        ss_c_sm = SS_c; df_c_sm = 1
+
+    # Error residual
+    if 'Residual' in aov_sm.index:
+        ss_r = aov_sm.loc['Residual', 'sum_sq']
+        df_r = int(aov_sm.loc['Residual', 'df'])
+    else:
+        ss_r = SS_t - sum(r[1] for r in rows) - ss_c_sm
+        df_r = N - 1 - (df_b + len(ef) + 1)
+
+    if df_r < 1:
+        raise ValueError(f"df_resid={df_r}<1")
+
+    MS_r = ss_r / df_r
+
+    # Calcular F y p para cada termino
+    for i, row in enumerate(rows):
+        if row[0] not in ['Bloques']:
+            ss_t = row[1]; df_t = row[2]
+            ms_t = ss_t / df_t
+            F_t = ms_t / MS_r
+            p_t = stats.f.sf(F_t, df_t, df_r)
+            rows[i] = (row[0], ss_t, df_t, ms_t, F_t, p_t)
+
+    # F para curvatura
+    ms_c = ss_c_sm / df_c_sm
+    F_c = ms_c / MS_r
+    p_c = stats.f.sf(F_c, df_c_sm, df_r)
+
+    # F para bloques
+    if df_b > 0:
+        ss_b = rows[0][1]; df_b_val = rows[0][2]
+        ms_b = ss_b / df_b_val
+        F_b = ms_b / MS_r
+        p_b = stats.f.sf(F_b, df_b_val, df_r)
+        rows[0] = ('Bloques', ss_b, df_b_val, ms_b, F_b, p_b)
+
+    # Lack-of-Fit y Pure Error
+    if Nc > 1:
+        y_cen = cen['Y'].values
+        ss_pe = ((y_cen - y_cen.mean())**2).sum()
+        df_pe = Nc - 1
+        ms_pe = ss_pe / df_pe
+
+        ss_lof = ss_r - ss_pe
+        df_lof = df_r - df_pe
+        ms_lof = ss_lof / df_lof if df_lof > 0 else np.nan
+        F_lof = ms_lof / ms_pe if ms_pe > 0 else np.nan
+        p_lof = stats.f.sf(F_lof, df_lof, df_pe) if df_lof > 0 else np.nan
+
+        rows.append(('Curvatura', ss_c_sm, df_c_sm, ms_c, F_c, p_c))
+        rows.append(('Error', ss_r, df_r, MS_r, np.nan, np.nan))
+        rows.append(('  Lack-of-Fit', ss_lof, df_lof, ms_lof, F_lof, p_lof))
+        rows.append(('  Pure Error', ss_pe, df_pe, ms_pe, np.nan, np.nan))
+    else:
+        rows.append(('Curvatura', ss_c_sm, df_c_sm, ms_c, F_c, p_c))
+        rows.append(('Residual', ss_r, df_r, MS_r, np.nan, np.nan))
+
     anova = pd.DataFrame(rows, columns=['Fuente','SS','GL','MS','F','p'])
-    anova['F_crit'] = [stats.f.ppf(0.95,gl,df_r) if pd.notna(gl) and gl>0 else np.nan
+    anova['F_crit'] = [stats.f.ppf(0.95, gl, df_r) if pd.notna(gl) and gl > 0 else np.nan
                        for gl in anova['GL']]
-    anova['Sig'] = ['OK' if (pd.notna(p) and p<0.05) else ('-' if pd.isna(p) else 'NO')
+    anova['Sig'] = ['OK' if (pd.notna(p) and p < 0.05) else ('-' if pd.isna(p) else 'NO')
                     for p in anova['p']]
 
-    # --- NUEVO: Guardar coeficientes de bloques para la ecuación (Solo Vía 2) ---
+    # Actualizar efectos con F y p del modelo reducido
+    for t in ef:
+        for r in rows:
+            if r[0] == t:
+                ef[t]['MS'] = r[3]
+                ef[t]['F'] = r[4]
+                ef[t]['p'] = r[5]
+                break
+
+    # Coeficientes de bloques
     R_coef_bloques = {}
     if df_b > 0:
         medias_bloques = bt / sz
-        R_intercepto_bloques = medias_bloques.iloc[0] 
+        R_intercepto_bloques = medias_bloques.iloc[0]
         for i, b in enumerate(medias_bloques.index):
             if i > 0:
                 R_coef_bloques[b] = medias_bloques.iloc[i] - R_intercepto_bloques
     else:
-        R_intercepto_bloques = y  # Si no hay bloques, usar la media global
-    # ----------------------------------------------------------------------------
-    R2 = 1 - SS_r/SS_t; R2a = 1 - (SS_r/df_r)/(SS_t/(N-1))
+        R_intercepto_bloques = y
+
+    R2 = mfit.rsquared; R2a = mfit.rsquared_adj
+
     R = dict(via=VIA_2, k=k, factores=factores, N=N, Nf=Nf, Nc=Nc,
              n_bloques=n_b, n_replicas=n_b, tiene_bloques=True, tiene_centro=True,
-             y_bar=y, SS_total=SS_t, SS_blocks=SS_b, SS_curv=SS_c,
+             y_bar=y, SS_total=SS_t, SS_blocks=SS_b, SS_curv=ss_c_sm,
              intercepto_bloques=R_intercepto_bloques, coef_bloques=R_coef_bloques,
-             SS_resid=SS_r, SS_model=SS_m, effects=ef, all_effects=ef_all,
+             SS_resid=ss_r, SS_model=sum(r[1] for r in rows if r[0] not in ['Error','Residual','  Lack-of-Fit','  Pure Error']),
+             effects=ef, all_effects=ef_all,
              terms_included=list(terms), anova=anova,
-             MS_resid=MS_r, MS_blocks=MS_b, MS_curv=MS_c,
-             F_blocks=F_b, p_blocks=p_b, F_curv=F_c, p_curv=p_c,
-             df_blocks=df_b, df_resid=df_r, yf_bar=yf, yc_bar=yc,
+             MS_resid=MS_r, MS_curv=ms_c,
+             F_curv=F_c, p_curv=p_c,
+             df_resid=df_r, yf_bar=yf, yc_bar=yc,
              R2=R2, R2_adj=R2a,
              main_effects=_calc_main_effects(df, factores),
              interactions=_calc_interactions(df, factores),
              t_crit=stats.t.ppf(0.975, df_r))
+    if df_b > 0:
+        R['MS_blocks'] = MS_b; R['F_blocks'] = F_b; R['p_blocks'] = p_b; R['df_blocks'] = df_b
     R['lenth'] = calcular_lenth(ef, df_resid=df_r)
     return R
 
-# ---------- Via 3 ----------
 def calcular_via3(df, factores):
     k = len(factores); N = len(df); G = df['Y'].sum(); y = G/N
     SS_t = (df['Y']**2).sum() - G**2/N
