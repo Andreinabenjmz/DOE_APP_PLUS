@@ -177,10 +177,12 @@ def ajustar_ccd(df_raw, factores, ycol, alpha_elim=0.05, eliminar=True):
              N=len(df), coding=coding, terms_full=terms_full, terms=terms,
              historial=historial, model=m, model_full=m_full,
              anova=an, R2=float(m.rsquared), R2_adj=float(m.rsquared_adj),
+             S=float(np.sqrt(m.mse_resid)),   # <--- ESTA ES LA LÍNEA NUEVA
              lof=lof, effects=effects, y_bar=float(df[ycol].mean()),
              eq_coded=eq_coded, eq_uncoded=eq_uncoded,
              fitted=np.asarray(m.fittedvalues), resid=np.asarray(m.resid),
              tiene_bloques=False, tiene_centro=True)
+
     return R
 
 # ------------------------------------------------------------------
