@@ -105,19 +105,26 @@ def _es_codificada(raw, cols):
 
 
 def _detectar_centros(raw, cols):
+    """Detecta filas donde TODOS los factores estan cercanos a 0 (centros).
+    Devuelve (n_centros, lista_indices)."""
     df_num = raw[cols].apply(pd.to_numeric, errors='coerce')
-    return int(df_num.eq(0).all(axis=1).sum())
+    mascara = df_num.apply(lambda r: all(abs(v) < 0.5 for v in r), axis=1)
+    indices = raw[mascara].index.tolist()
+    return len(indices), indices
 
 
 def _detectar_replicas(raw, cols, resp_col):
     """Cuenta replicas PURAS del diseno completo (excluye puntos centrales)."""
     if resp_col is None or resp_col not in raw.columns:
         return 0
-    # Excluir puntos centrales (todos los factores = 0)
     df_esq = raw.copy()
     for c in cols:
         df_esq[c] = pd.to_numeric(df_esq[c], errors='coerce')
-    df_esq = df_esq[~df_esq[cols].eq(0).all(axis=1)]
+    # Excluir puntos centrales: usar filas confirmadas si existen, sino buscar ceros
+    if 'filas_centro_idx' in st.session_state and st.session_state.filas_centro_idx:
+        df_esq = df_esq.drop(st.session_state.filas_centro_idx, errors='ignore')
+    else:
+        df_esq = df_esq[~df_esq[cols].apply(lambda r: all(abs(v) < 0.5 for v in r), axis=1)]
     if len(df_esq) == 0:
         return 0
     df_group = df_esq.groupby(cols)[resp_col].count()
@@ -129,7 +136,10 @@ def _detectar_bloques(raw, cols):
         return True
     k = len(cols)
     n = len(raw)
-    centros = _detectar_centros(raw, cols)
+    if 'filas_centro_idx' in st.session_state and st.session_state.filas_centro_idx:
+        centros = len(st.session_state.filas_centro_idx)
+    else:
+        centros = _detectar_centros(raw, cols)[0]
     esquinas = n - centros
     potencia = 2 ** k
     return esquinas > potencia
@@ -138,7 +148,10 @@ def _detectar_bloques(raw, cols):
 def _validar_analisis_vs_diseno(raw, factores, respuesta, analisis):
     k = len(factores)
     n = len(raw)
-    centros = _detectar_centros(raw, factores)
+    if 'filas_centro_idx' in st.session_state and st.session_state.filas_centro_idx:
+        centros = len(st.session_state.filas_centro_idx)
+    else:
+        centros = _detectar_centros(raw, factores)[0]
     esquinas = n - centros
     replicas = _detectar_replicas(raw, factores, respuesta)
     tiene_bloques = _detectar_bloques(raw, factores)
@@ -170,7 +183,11 @@ def _validar_analisis_vs_diseno(raw, factores, respuesta, analisis):
 def _sugerir_analisis(raw, factores, respuesta):
     n = len(raw)
     k = len(factores)
-    centros = _detectar_centros(raw, factores)
+    # Usar filas confirmadas si existen
+    if 'filas_centro_idx' in st.session_state and st.session_state.filas_centro_idx:
+        centros = len(st.session_state.filas_centro_idx)
+    else:
+        centros = _detectar_centros(raw, factores)[0]
     esquinas = n - centros
     replicas = _detectar_replicas(raw, factores, respuesta)
 
@@ -367,53 +384,103 @@ elif st.session_state.stage == 'preview':
             cols_mostrar.append(st.session_state.corrida_col)
         cols_mostrar.extend(factores)
         cols_mostrar.append(respuesta)
-        st.dataframe(raw[cols_mostrar].head(15), use_container_width=True)
+        st.dataframe(raw[cols_mostrar], use_container_width=True)
 
-        centros = _detectar_centros(raw, factores)
+        centros = _detectar_centros(raw, factores)[0]
         replicas = _detectar_replicas(raw, factores, respuesta)
 
         st.markdown("---")
         st.markdown("### ¿Que detecto el programa?")
 
+        # Detectar centros automaticamente
+        n_centros_detect, idx_centros = _detectar_centros(raw, factores)
+        # Si el usuario ya confirmo filas, usar esas
+        if 'filas_centro_idx' in st.session_state and st.session_state.filas_centro_idx:
+            idx_centros = st.session_state.filas_centro_idx
+            n_centros_detect = len(idx_centros)
+
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Factores", len(factores))
         with col2:
-            st.metric("Puntos centrales", centros, delta="(filas con todos los factores = 0)")
+            st.metric("Puntos centrales", n_centros_detect, delta="(filas con todos los factores ~ 0)")
         with col3:
             st.metric("Replicas puras", replicas, delta="(filas identicas en factores)")
+
+        # Confirmacion de puntos centrales
+        if n_centros_detect > 0:
+            filas_str = ', '.join(str(i+1) for i in idx_centros)
+            st.info(f"Detecte **{n_centros_detect}** punto(s) central(es) en la(s) fila(s): **{filas_str}**")
+            correcto = st.radio("¿Es correcto?", ["Si, es correcto", "No, quiero corregir"], horizontal=True, key="confirm_centros")
+            if correcto == "Si, es correcto":
+                st.session_state.filas_centro_idx = idx_centros
+                st.session_state.centros_confirmados = True
+            else:
+                st.session_state.centros_confirmados = False
+                st.markdown("Escribe los numeros de fila separados por coma (empezando desde 1):")
+                filas_centro_input = st.text_input("Filas de centro", placeholder="ej: 3,6,11", key="filas_centro_manual")
+                if filas_centro_input:
+                    try:
+                        filas_idx = [int(x.strip()) - 1 for x in filas_centro_input.split(",")]
+                        validas = [i for i in filas_idx if 0 <= i < len(raw)]
+                        if len(validas) != len(filas_idx):
+                            st.warning(f"Algunas filas estan fuera de rango (max: {len(raw)}). Se usaran solo las validas.")
+                        if validas:
+                            st.session_state.filas_centro_idx = validas
+                            st.session_state.centros_confirmados = True
+                            st.success(f"Marcadas como centros las filas: {', '.join(str(i+1) for i in validas)}")
+                    except ValueError:
+                        st.error("Formato invalido. Usa numeros separados por coma.")
+        else:
+            st.info("No detecte puntos centrales (filas donde todos los factores estan cerca de 0).")
+            correcto = st.radio("¿Tu matriz SI tiene puntos centrales?", ["No, no tiene", "Si, pero no los detecto"], horizontal=True, key="confirm_no_centros")
+            if correcto == "Si, pero no los detecto":
+                st.markdown("Escribe los numeros de fila separados por coma (empezando desde 1):")
+                filas_centro_input = st.text_input("Filas de centro", placeholder="ej: 3,6,11", key="filas_centro_manual2")
+                if filas_centro_input:
+                    try:
+                        filas_idx = [int(x.strip()) - 1 for x in filas_centro_input.split(",")]
+                        validas = [i for i in filas_idx if 0 <= i < len(raw)]
+                        if validas:
+                            st.session_state.filas_centro_idx = validas
+                            st.session_state.centros_confirmados = True
+                            st.success(f"Marcadas como centros las filas: {', '.join(str(i+1) for i in validas)}")
+                    except ValueError:
+                        st.error("Formato invalido. Usa numeros separados por coma.")
+            else:
+                st.session_state.centros_confirmados = True
+                st.session_state.filas_centro_idx = []
 
         # Explicacion de puntos centrales
         with st.expander("💡 ¿Que son los puntos centrales?"):
             st.markdown("""
-            Los **puntos centrales** son corridas experimentales donde **todos los factores están en su valor intermedio** (nivel 0 en codificación).
+            Los **puntos centrales** son corridas experimentales donde **todos los factores están en su valor intermedio** (nivel 0 en codificacion).
 
             **Ejemplo con 3 factores (A, B, C):**
-            - Esquinas del diseño: A=-1, B=-1, C=-1  |  A=+1, B=-1, C=-1  |  etc.
+            - Esquinas del diseno: A=-1, B=-1, C=-1  |  A=+1, B=-1, C=-1  |  etc.
             - **Punto central:** A=**0**, B=**0**, C=**0**
 
-            **Para qué sirven:**
+            **Para que sirven:**
             - Probar si existe **curvatura** en la superficie de respuesta
             - Estimar el **error puro** del experimento
             - Son la base del **Analisis Via 2**
-
-            **Como los agrego:**
-            En tu Excel, añade 3-5 filas extra donde todos los factores tengan su valor medio.
             """)
 
         st.markdown(f"""
         **Codificacion detectada:** {'Codificada (-1, 0, +1)' if es_cod else 'NO codificada (valores reales)'}
         """)
 
+        # Recalcular centros para la sugerencia
+        centros_final = len(st.session_state.get('filas_centro_idx', []))
         sug_analisis, sug_msg = _sugerir_analisis(raw, factores, respuesta)
         _info_box("Sugerencia del programa", sug_msg, tipo='tip')
 
-        # Boton para agregar centros automaticamente (si no hay)
-        if centros == 0 and sug_analisis == 'factorial_via2':
+        # Boton para agregar centros automaticamente (si no hay y no confirmo)
+        if centros_final == 0 and sug_analisis == 'factorial_via2' and not st.session_state.get('centros_confirmados'):
             st.markdown("---")
             _info_box("No tienes puntos centrales",
                       "El programa detecto que necesitas puntos centrales para el Analisis Via 2. "
-                      "Puedes agregarlos automaticamente o hacerlo manualmente en tu Excel.",
+                      "Puedes agregarlos automaticamente.",
                       tipo='warning')
             n_centros = st.number_input("Cuantos puntos centrales quieres agregar?", min_value=1, max_value=10, value=3, step=1)
             if st.button("➕ Agregar puntos centrales automaticamente", use_container_width=True):
@@ -464,8 +531,11 @@ elif st.session_state.stage == 'encode':
 
         if es_cod:
             c1, c2 = st.columns(2)
-            v_bajo = c1.number_input(f"Valor real para -1 (bajo) - {f}", value=0.0, key=f"real_low_{f}")
-            v_alto = c2.number_input(f"Valor real para +1 (alto) - {f}", value=100.0, key=f"real_high_{f}")
+            # Leer valor previo de session_state si existe
+            def_val_low = st.session_state.get(f"real_low_{f}", 0.0)
+            def_val_high = st.session_state.get(f"real_high_{f}", 100.0)
+            v_bajo = c1.number_input(f"Valor real para -1 (bajo) - {f}", value=def_val_low, key=f"real_low_{f}")
+            v_alto = c2.number_input(f"Valor real para +1 (alto) - {f}", value=def_val_high, key=f"real_high_{f}")
             v_medio = (v_bajo + v_alto) / 2
             st.caption(f"Centro (0) calculado: **{v_medio:.4f}**")
             mapeos_niveles[f] = {v_bajo: -1, v_medio: 0, v_alto: 1}
@@ -481,8 +551,10 @@ elif st.session_state.stage == 'encode':
                 st.info(f"Detectados 3 niveles: Bajo={v_bajo}, Centro={v_medio}, Alto={v_alto}")
             else:
                 c1, c2 = st.columns(2)
-                v_bajo = c1.number_input(f"Nivel BAJO para {f}", value=float(min(vals)), key=f"low_{f}")
-                v_alto = c2.number_input(f"Nivel ALTO para {f}", value=float(max(vals)), key=f"high_{f}")
+                def_val_low = st.session_state.get(f"low_{f}", float(min(vals)))
+                def_val_high = st.session_state.get(f"high_{f}", float(max(vals)))
+                v_bajo = c1.number_input(f"Nivel BAJO para {f}", value=def_val_low, key=f"low_{f}")
+                v_alto = c2.number_input(f"Nivel ALTO para {f}", value=def_val_high, key=f"high_{f}")
                 v_medio = (v_bajo + v_alto) / 2
                 st.caption(f"Centro calculado: **{v_medio:.4f}**")
 
@@ -510,10 +582,10 @@ elif st.session_state.stage == 'encode':
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**Matriz Codificada (-1, 0, +1)**")
-        st.dataframe(df_cod[factores + [respuesta]].head(10), use_container_width=True)
+        st.dataframe(df_cod[factores + [respuesta]], use_container_width=True)
     with c2:
         st.markdown("**Matriz con Valores Reales**")
-        st.dataframe(df_real[factores + [respuesta]].head(10), use_container_width=True)
+        st.dataframe(df_real[factores + [respuesta]], use_container_width=True)
 
     st.markdown("### ¿Con cual matriz quieres hacer el analisis?")
     eleccion = st.radio("Selecciona:", ["Codificada", "Valores Reales"], horizontal=True)
@@ -547,7 +619,7 @@ elif st.session_state.stage == 'analysis_select':
               "Elige el tipo de analisis que mejor se adapte a tu diseno.",
               tipo='info')
 
-    centros = _detectar_centros(raw, factores)
+    centros = _detectar_centros(raw, factores)[0]
     replicas = _detectar_replicas(raw, factores, respuesta)
     esq = len(raw) - centros
 
