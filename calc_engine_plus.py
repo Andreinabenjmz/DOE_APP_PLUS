@@ -319,8 +319,10 @@ def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
     mfit = smf.ols(formula, data=df).fit()
     aov_sm = sm.stats.anova_lm(mfit, typ=1)
 
-    # Construir ANOVA estilo Minitab
+    # Construir ANOVA estilo Minitab con lineas de agrupacion
     rows = []
+    ss_lin = 0; df_lin = 0
+    ss_2w = 0; df_2w = 0
 
     # Bloques
     MS_b = F_b = p_b = np.nan
@@ -330,16 +332,17 @@ def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
         MS_b = ss_b / df_b_sm if df_b_sm > 0 else np.nan
         rows.append(('Bloques', ss_b, df_b_sm, MS_b, np.nan, np.nan))
 
-    # Efectos principales
+    # Efectos principales (acumular para fila Linear)
     for f in factores:
         if f in terms:
             key = f'Q("{f}")'
             if key in aov_sm.index:
                 ss = aov_sm.loc[key, 'sum_sq']
                 df_t = aov_sm.loc[key, 'df']
+                ss_lin += ss; df_lin += int(df_t)
                 rows.append((f, ss, df_t, np.nan, np.nan, np.nan))
 
-    # Interacciones 2-Way
+    # Interacciones 2-Way (acumular para fila 2-Way)
     for t in terms:
         if '*' in t and len(t.split('*')) == 2:
             f1, f2 = t.split('*')
@@ -347,6 +350,7 @@ def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
             if key in aov_sm.index:
                 ss = aov_sm.loc[key, 'sum_sq']
                 df_t = aov_sm.loc[key, 'df']
+                ss_2w += ss; df_2w += int(df_t)
                 rows.append((t, ss, df_t, np.nan, np.nan, np.nan))
 
     # Curvatura
@@ -370,27 +374,61 @@ def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
 
     MS_r = ss_r / df_r
 
-    # Calcular F y p para cada termino
-    for i, row in enumerate(rows):
-        if row[0] not in ['Bloques']:
-            ss_t = row[1]; df_t = row[2]
-            ms_t = ss_t / df_t
-            F_t = ms_t / MS_r
-            p_t = stats.f.sf(F_t, df_t, df_r)
-            rows[i] = (row[0], ss_t, df_t, ms_t, F_t, p_t)
+    # Insertar filas de agrupacion ANTES de calcular F y p
+    # Reconstruir rows con filas de agrupacion
+    new_rows = []
 
-    # F para curvatura
-    ms_c = ss_c_sm / df_c_sm
-    F_c = ms_c / MS_r
-    p_c = stats.f.sf(F_c, df_c_sm, df_r)
-
-    # F para bloques
+    # Bloques (si hay)
     if df_b > 0:
         ss_b = rows[0][1]; df_b_val = rows[0][2]
         ms_b = ss_b / df_b_val
         F_b = ms_b / MS_r
         p_b = stats.f.sf(F_b, df_b_val, df_r)
-        rows[0] = ('Bloques', ss_b, df_b_val, ms_b, F_b, p_b)
+        new_rows.append(('Bloques', ss_b, df_b_val, ms_b, F_b, p_b))
+
+    # Linear
+    if df_lin > 0:
+        ms_lin = ss_lin / df_lin
+        F_lin = ms_lin / MS_r
+        p_lin = stats.f.sf(F_lin, df_lin, df_r)
+        new_rows.append(('Linear', ss_lin, df_lin, ms_lin, F_lin, p_lin))
+
+    # Principales individuales
+    for f in factores:
+        if f in terms:
+            key = f'Q("{f}")'
+            if key in aov_sm.index:
+                ss = aov_sm.loc[key, 'sum_sq']
+                df_t = aov_sm.loc[key, 'df']
+                ms_t = ss / df_t
+                F_t = ms_t / MS_r
+                p_t = stats.f.sf(F_t, df_t, df_r)
+                new_rows.append((f, ss, df_t, ms_t, F_t, p_t))
+
+    # 2-Way Interactions
+    if df_2w > 0:
+        ms_2w = ss_2w / df_2w
+        F_2w = ms_2w / MS_r
+        p_2w = stats.f.sf(F_2w, df_2w, df_r)
+        new_rows.append(('2-Way Interactions', ss_2w, df_2w, ms_2w, F_2w, p_2w))
+
+    # Interacciones individuales
+    for t in terms:
+        if '*' in t and len(t.split('*')) == 2:
+            f1, f2 = t.split('*')
+            key = f'Q("{f1}"):Q("{f2}")'
+            if key in aov_sm.index:
+                ss = aov_sm.loc[key, 'sum_sq']
+                df_t = aov_sm.loc[key, 'df']
+                ms_t = ss / df_t
+                F_t = ms_t / MS_r
+                p_t = stats.f.sf(F_t, df_t, df_r)
+                new_rows.append((t, ss, df_t, ms_t, F_t, p_t))
+
+    # Curvatura
+    ms_c = ss_c_sm / df_c_sm
+    F_c = ms_c / MS_r
+    p_c = stats.f.sf(F_c, df_c_sm, df_r)
 
     # Lack-of-Fit y Pure Error
     if Nc > 1:
@@ -405,13 +443,15 @@ def calcular_via2_con_terminos(df, factores, terms=None, alpha=0.05):
         F_lof = ms_lof / ms_pe if ms_pe > 0 else np.nan
         p_lof = stats.f.sf(F_lof, df_lof, df_pe) if df_lof > 0 else np.nan
 
-        rows.append(('Curvatura', ss_c_sm, df_c_sm, ms_c, F_c, p_c))
-        rows.append(('Error', ss_r, df_r, MS_r, np.nan, np.nan))
-        rows.append(('  Lack-of-Fit', ss_lof, df_lof, ms_lof, F_lof, p_lof))
-        rows.append(('  Pure Error', ss_pe, df_pe, ms_pe, np.nan, np.nan))
+        new_rows.append(('Curvatura', ss_c_sm, df_c_sm, ms_c, F_c, p_c))
+        new_rows.append(('Error', ss_r, df_r, MS_r, np.nan, np.nan))
+        new_rows.append(('  Lack-of-Fit', ss_lof, df_lof, ms_lof, F_lof, p_lof))
+        new_rows.append(('  Pure Error', ss_pe, df_pe, ms_pe, np.nan, np.nan))
     else:
-        rows.append(('Curvatura', ss_c_sm, df_c_sm, ms_c, F_c, p_c))
-        rows.append(('Residual', ss_r, df_r, MS_r, np.nan, np.nan))
+        new_rows.append(('Curvatura', ss_c_sm, df_c_sm, ms_c, F_c, p_c))
+        new_rows.append(('Residual', ss_r, df_r, MS_r, np.nan, np.nan))
+
+    rows = new_rows
 
     anova = pd.DataFrame(rows, columns=['Fuente','SS','GL','MS','F','p'])
     anova['F_crit'] = [stats.f.ppf(0.95, gl, df_r) if pd.notna(gl) and gl > 0 else np.nan
