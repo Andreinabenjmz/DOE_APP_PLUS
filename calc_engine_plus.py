@@ -852,8 +852,9 @@ def _gen_main_effects(R, spec=None, mapeos=None, unidades=None):
     plt.close()
     return fn
 
-def _gen_interactions(R, custom_order=None, mapeos=None, unidades=None):
+def _gen_interactions(R, custom_order=None, mapeos=None, unidades=None, eje_x_por_interaccion=None):
     sig = [n for n in R['effects'] if len(n.split('*')) == 2]
+
     if custom_order is not None and len(custom_order) > 0:
         sig = [n for n in custom_order if n in R['effects']]
 
@@ -861,10 +862,11 @@ def _gen_interactions(R, custom_order=None, mapeos=None, unidades=None):
         return []
     files = []
     chunk_size = 2
+    eje_x_map = eje_x_por_interaccion or {}
 
     for i in range(0, len(sig), chunk_size):
-        chunk = sig[i:i + chunk_size]
-        fig, axes = plt.subplots(1, len(chunk), figsize=(6 * len(chunk), 4.5))
+        chunk = sig[i:i+chunk_size]
+        fig, axes = plt.subplots(1, len(chunk), figsize=(6*len(chunk), 4.5))
         if len(chunk) == 1:
             axes = [axes]
 
@@ -873,48 +875,60 @@ def _gen_interactions(R, custom_order=None, mapeos=None, unidades=None):
             if len(parts) == 2:
                 f1, f2 = parts
                 it = R['interactions'][(f1, f2)]
-                u1 = (unidades or {}).get(f1, '').strip()
-                u2 = (unidades or {}).get(f2, '').strip()
-                lbl1 = f"{f1} ({u1})" if u1 else f1
-                suf2 = f" {u2}" if u2 else ""
 
-                if mapeos and f1 in mapeos and f2 in mapeos:
-                    v1_low = mapeos[f1].get(-1, -1)
-                    v1_high = mapeos[f1].get(1, 1)
-                    v2_low = mapeos[f2].get(-1, -1)
-                    v2_high = mapeos[f2].get(1, 1)
-
-                    ax.plot([v1_low, v1_high], [it['mll'], it['mhl']],
-                            'o-', color='#90CAF9', markersize=8, linewidth=2,
-                            label=f'{f2} = {v2_low}{suf2}')
-                    ax.plot([v1_low, v1_high], [it['mlh'], it['mhh']],
-                            's-', color='#EF9A9A', markersize=8, linewidth=2,
-                            label=f'{f2} = {v2_high}{suf2}')
-                    ax.set_xticks([v1_low, v1_high])
-                    ax.set_xlabel(lbl1)
+                # Elegir que factor va en el eje X (por defecto f1)
+                x_elegido = eje_x_map.get(name, f1)
+                if x_elegido == f2:
+                    x_fac, leg_fac = f2, f1
+                    y_low = [it['mll'], it['mlh']]   # leg_fac = -1 mientras x_fac varia (-1 -> +1)
+                    y_high = [it['mhl'], it['mhh']]  # leg_fac = +1 mientras x_fac varia (-1 -> +1)
                 else:
-                    ax.plot([-1, 1], [it['mll'], it['mhl']], 'o-', color='#90CAF9',
-                            markersize=8, linewidth=2, label=f'{f2} = -1')
-                    ax.plot([-1, 1], [it['mlh'], it['mhh']], 's-', color='#EF9A9A',
-                            markersize=8, linewidth=2, label=f'{f2} = +1')
+                    x_fac, leg_fac = f1, f2
+                    y_low = [it['mll'], it['mhl']]   # leg_fac = -1 mientras x_fac varia (-1 -> +1)
+                    y_high = [it['mlh'], it['mhh']]  # leg_fac = +1 mientras x_fac varia (-1 -> +1)
+
+                u_x = (unidades or {}).get(x_fac, '').strip()
+                u_leg = (unidades or {}).get(leg_fac, '').strip()
+                lbl_x = f"{x_fac} ({u_x})" if u_x else x_fac
+                suf_u_leg = f" {u_leg}" if u_leg else ""
+
+                # Usar valores reales si hay mapeos
+                if mapeos and x_fac in mapeos and leg_fac in mapeos:
+                    vx_low = mapeos[x_fac].get(-1, -1)
+                    vx_high = mapeos[x_fac].get(1, 1)
+                    vl_low = mapeos[leg_fac].get(-1, -1)
+                    vl_high = mapeos[leg_fac].get(1, 1)
+
+                    ax.plot([vx_low, vx_high], y_low,
+                            'o-', color='#90CAF9', markersize=8, linewidth=2,
+                            label=f'{leg_fac} = {vl_low}{suf_u_leg}')
+                    ax.plot([vx_low, vx_high], y_high,
+                            's-', color='#EF9A9A', markersize=8, linewidth=2,
+                            label=f'{leg_fac} = {vl_high}{suf_u_leg}')
+                    ax.set_xticks([vx_low, vx_high])
+                    ax.set_xlabel(lbl_x)
+                else:
+                    ax.plot([-1, 1], y_low, 'o-', color='#90CAF9',
+                            markersize=8, linewidth=2, label=f'{leg_fac} = -1')
+                    ax.plot([-1, 1], y_high, 's-', color='#EF9A9A',
+                            markersize=8, linewidth=2, label=f'{leg_fac} = +1')
                     ax.set_xticks([-1, 1])
-                    ax.set_xticklabels([f'{f1} = -1', f'{f1} = +1'])
-                    ax.set_xlabel(lbl1)
+                    ax.set_xticklabels([f'{x_fac} = -1', f'{x_fac} = +1'])
+                    ax.set_xlabel(lbl_x)
 
                 ax.set_ylabel('Media de Y')
                 ax.legend(loc='best', framealpha=0.9)
                 ax.grid(alpha=0.3)
                 suf = ' (exploratoria)' if R['via'] == VIA_3 else ''
-                ax.set_title(f'Interaccion {name}{suf}')
+                ax.set_title(f'Interaccion {x_fac} * {leg_fac}{suf}')
 
         plt.tight_layout()
-        fn_bloque = f'interacciones_grupo_{i // chunk_size + 1}.png'
+        fn_bloque = f'interacciones_grupo_{i//chunk_size + 1}.png'
         plt.savefig(fn_bloque, bbox_inches='tight', dpi=150)
         plt.close()
         files.append(fn_bloque)
 
     return files
-
 
 def _gen_residuales(df, R):
     terms = R.get('terms_included', list(R['effects'].keys()))
