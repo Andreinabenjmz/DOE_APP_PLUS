@@ -10,6 +10,7 @@ from scipy import stats
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # noqa
 
 VIA_CCD = 'ccd'
 VIA_INFO_CCD = {'nombre': 'Superficie de Respuesta (CCD)', 'emoji': 'D'}
@@ -305,7 +306,6 @@ def _zgrid(R, f1, f2, XX, YY, fijos=None):
         Z = Z + b * prod
     return Z
 
-
 def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None,
                       estilo='moderno', cmap=None, xlabel=None, ylabel=None, punto=None,
                       fijos=None):
@@ -344,6 +344,47 @@ def graf_contorno_ccd(R, f1, f2, ax=None, titulo=None, niveles=None,
     if created:
         fn = f"contorno_{R['respuesta']}_{f1}_{f2}.png"
         plt.savefig(fn, bbox_inches='tight'); plt.close()
+        return fn
+
+def graf_superficie_3d_ccd(R, f1, f2, ax=None, titulo=None, estilo='moderno',
+                           cmap=None, xlabel=None, ylabel=None, zlabel=None,
+                           punto=None, fijos=None):
+    """Superficie 3D del modelo cuadratico CCD sobre el plano (f1, f2)."""
+    created = ax is None
+    if created:
+        fig = plt.figure(figsize=(8, 5.8))
+        ax = fig.add_subplot(111, projection='3d')
+
+    c1, c2 = R['coding'][f1], R['coding'][f2]
+    x = np.linspace(c1['lo'], c1['hi'], 60)
+    y = np.linspace(c2['lo'], c2['hi'], 60)
+    XX, YY = np.meshgrid(x, y)
+    Z = _zgrid(R, f1, f2, XX, YY, fijos=fijos)
+
+    cmap_use = cmap or ('terrain' if estilo == 'clasico' else 'viridis')
+    surf = ax.plot_surface(XX, YY, Z, cmap=cmap_use, edgecolor='none', alpha=0.92)
+
+    if punto:
+        p_eval = {
+            f: (fijos[f] if (fijos and f in fijos) else R['coding'][f]['c'])
+            for f in R['factores']
+        }
+        p_eval[f1] = punto[f1]
+        p_eval[f2] = punto[f2]
+        zp = predecir_ccd(R, p_eval)
+        ax.scatter([punto[f1]], [punto[f2]], [zp],
+                   color='red', marker='*', s=220, edgecolor='k', zorder=10)
+
+    ax.set_xlabel(xlabel or f1, labelpad=10)
+    ax.set_ylabel(ylabel or f2, labelpad=10)
+    ax.set_zlabel(zlabel or R['respuesta'], labelpad=10)
+    ax.set_title(titulo or f"Superficie 3D: {R['respuesta']}")
+    plt.colorbar(surf, ax=ax, shrink=0.55, aspect=10, pad=0.1, label=R['respuesta'])
+
+    if created:
+        fn = f"superficie3d_{R['respuesta']}_{f1}_{f2}.png"
+        plt.savefig(fn, bbox_inches='tight', dpi=150)
+        plt.close()
         return fn
 
 def graf_superposicion_ccd(Rs, rangos, f1, f2, punto=None, ax=None, xlabel=None, ylabel=None,
