@@ -11,7 +11,6 @@ from datetime import date
 from docx import Document
 
 import calc_engine_plus as ce
-import calc_engine_rsm as ce_rsm
 
 from docx.shared import Inches
 
@@ -80,9 +79,14 @@ def _detectar_columnas(raw):
             factores.append(c)
             continue
 
-        if n_unicos == 3 and pd.api.types.is_numeric_dtype(raw[c]):
-            factores.append(c)   # CCD tambien en unidades reales (0.05/0.5/0.95)
-            continue
+        if n_unicos == 3:
+            try:
+                vals_num = [float(v) for v in vals]
+                if set(vals_num) == {-1.0, 0.0, 1.0}:
+                    factores.append(c)
+                    continue
+            except (ValueError, TypeError):
+                pass
 
         if pd.api.types.is_numeric_dtype(raw[c]):
             respuestas.append(c)
@@ -131,17 +135,6 @@ with st.sidebar:
                 file_name='matriz_fraccionada_2_5-1.csv',
                 mime='text/csv',
             )
-    with st.expander("Generar Matriz CCD (Superficie de Respuesta)"):
-        k_ccd = st.selectbox("N° de factores (k)", [2, 3, 4], index=1)
-        alfa_ccd = st.selectbox("Tipo de CCD", ["face", "rot"],
-                                format_func=lambda a: "Cara a cara (α=1)" if a == "face" else "Rotacional")
-        nc_ccd = st.number_input("Puntos centrales", 1, 8, 3)
-        if st.button("Generar Matriz CCD"):
-            df_ccd = ce_rsm.generar_matriz_ccd(k_ccd, alpha=alfa_ccd, n_centros=int(nc_ccd))
-            st.dataframe(df_ccd, use_container_width=True)
-            st.download_button("⬇️ Descargar CCD (CSV)",
-                               df_ccd.to_csv(index=False).encode('utf-8'),
-                               'matriz_ccd.csv', 'text/csv')
     st.markdown("---")
 
     # 2. CARGADOR DE ARCHIVOS
@@ -167,12 +160,6 @@ with st.sidebar:
         cols = st.multiselect("Factores", raw.columns.tolist(), default=fact_cands, key="mis_factores")
         resp = st.multiselect("Respuesta(s)", raw.columns.tolist(), default=resp_cands, key="mi_respuesta")
 
-        # Deteccion temprana de CCD: si aplica, se ocultan las opciones de vía 2^k
-        es_ccd = ce_rsm.es_diseno_ccd(raw, cols) if cols else False
-        if es_ccd:
-            st.success("Diseno CCD detectado: se usara la ruta de Superficie de Respuesta. "
-                       "Las opciones de via, objetivo y especificacion no aplican.")
-
         # --- PANEL PARA RENOMBRAR ---
         mapping_nombres = {}
         if len(cols) > 0:
@@ -194,7 +181,7 @@ with st.sidebar:
         
         # --- PANEL PARA CONFIGURAR NIVELES -1 / +1 ---
         mapeos_niveles = {}
-        if len(cols) > 0 and not es_ccd:
+        if len(cols) > 0:
             with st.expander("⚙️ Configurar Niveles (-1 / +1)", expanded=False):
                 st.markdown("Elige qué nivel corresponde al **bajo (-1)** y cuál al **alto (+1)**.")
                 for c in cols:
@@ -219,56 +206,49 @@ with st.sidebar:
                         mapeos_niveles[col_real] = {v_bajo: -1, v_mid: 0, v_alto: 1}
             st.markdown("---")
 
-        if es_ccd:
-            via = ce_rsm.VIA_CCD
-            objetivo = "Maximizar la respuesta"
-            spec = None
-        else:
-            via = st.radio("Via", options=[ce.VIA_1, ce.VIA_2, ce.VIA_3], format_func=lambda v: f"{ce.VIA_INFO[v]['nombre']}")
-            objetivo = st.radio("Objetivo del análisis:", ["Maximizar la respuesta", "Minimizar la respuesta"], index=0)
+        via = st.radio("Via", options=[ce.VIA_1, ce.VIA_2, ce.VIA_3], format_func=lambda v: f"{ce.VIA_INFO[v]['nombre']}")
+        objetivo = st.radio("Objetivo del análisis:", ["Maximizar la respuesta", "Minimizar la respuesta"], index=0)
 
-            use_spec = st.checkbox("Especificacion (target +/- tol)")
-            spec = None
-            if use_spec:
-                c1, c2 = st.columns(2)
-                target = c1.number_input("Target", value=24.0)
-                tol = c2.number_input("Tolerancia", value=4.0)
-                spec = {'target': target, 'tol': tol}
+        use_spec = st.checkbox("Especificacion (target +/- tol)")
+        spec = None
+        if use_spec:
+            c1, c2 = st.columns(2)
+            target = c1.number_input("Target", value=24.0)
+            tol = c2.number_input("Tolerancia", value=4.0)
+            spec = {'target': target, 'tol': tol}
 
         st.markdown("### Contexto")
         nombre = st.text_input("Proceso", "Analisis 2^k")
         estudiante = st.text_input("Estudiante", "")
         curso = st.text_input("Curso", "Asignacion")
 
-        simular_datos = False
-        if not es_ccd:
-            # --- PANEL DE SIMULACIÓN OPTIMIZADO ---
-            st.markdown("### 🧪 Simulador de Datos")
-            st.markdown("El programa generará los datos basándose en un modelo biológico predefinido.")
-            simular_datos = st.checkbox("Activar simulación (Ecuación + Ruido)")
+        # --- PANEL DE SIMULACIÓN OPTIMIZADO ---
+        st.markdown("### 🧪 Simulador de Datos")
+        st.markdown("El programa generará los datos basándose en un modelo biológico predefinido.")
+        simular_datos = st.checkbox("Activar simulación (Ecuación + Ruido)")
         
-            if simular_datos:
-                with st.expander("⚙️ Ver/Editar parámetros del modelo (Opcional)"):
-                    st.markdown("Estos coeficientes representan el comportamiento esperado según la literatura:")
-                    c1, c2 = st.columns(2)
-                    b0 = c1.number_input("Intercepto (β0)", value=2.5, key="sim_b0")
-                    bA = c2.number_input("Efecto A (Concentración)", value=0.6, key="sim_bA")
-                    bB = c1.number_input("Efecto B (Relación)", value=0.3, key="sim_bB")
-                    bC = c2.number_input("Efecto C (pH)", value=-0.5, key="sim_bC")
-                    bD = c1.number_input("Efecto D (Tiempo)", value=0.2, key="sim_bD")
-                    bE = c2.number_input("Efecto E (BSA)", value=-0.4, key="sim_bE")
-                    bAA = c1.number_input("Curvatura A²", value=-0.2, key="sim_bAA")
+        if simular_datos:
+            with st.expander("⚙️ Ver/Editar parámetros del modelo (Opcional)"):
+                st.markdown("Estos coeficientes representan el comportamiento esperado según la literatura:")
+                c1, c2 = st.columns(2)
+                b0 = c1.number_input("Intercepto (β0)", value=2.5, key="sim_b0")
+                bA = c2.number_input("Efecto A (Concentración)", value=0.6, key="sim_bA")
+                bB = c1.number_input("Efecto B (Relación)", value=0.3, key="sim_bB")
+                bC = c2.number_input("Efecto C (pH)", value=-0.5, key="sim_bC")
+                bD = c1.number_input("Efecto D (Tiempo)", value=0.2, key="sim_bD")
+                bE = c2.number_input("Efecto E (BSA)", value=-0.4, key="sim_bE")
+                bAA = c1.number_input("Curvatura A²", value=-0.2, key="sim_bAA")
                 
-                    st.markdown("**Interacciones biológicas plausibles:**")
-                    c3, c4 = st.columns(2)
-                    bAC = c3.number_input("Interacción A*C", value=0.3, key="sim_bAC")
-                    bBE = c4.number_input("Interacción B*E", value=-0.2, key="sim_bBE")
+                st.markdown("**Interacciones biológicas plausibles:**")
+                c3, c4 = st.columns(2)
+                bAC = c3.number_input("Interacción A*C", value=0.3, key="sim_bAC")
+                bBE = c4.number_input("Interacción B*E", value=-0.2, key="sim_bBE")
 
-                st.markdown("**Ruido experimental (Error):**")
-                c5, c6 = st.columns(2)
-                ruido = c5.number_input("Desviación del ruido (σ)", value=0.3, key="sim_noise")
-                y_max = c6.number_input("Límite superior (Y máx)", value=5.0, key="sim_ymax")
-                y_min = 0.0
+            st.markdown("**Ruido experimental (Error):**")
+            c5, c6 = st.columns(2)
+            ruido = c5.number_input("Desviación del ruido (σ)", value=0.3, key="sim_noise")
+            y_max = c6.number_input("Límite superior (Y máx)", value=5.0, key="sim_ymax")
+            y_min = 0.0
 
         # --- BOTÓN PROCESAR ---
         if st.button("Procesar", type='primary'):
@@ -282,14 +262,6 @@ with st.sidebar:
                     resp = [mapping_resp.get(r, r) for r in resp]
                 rp = raw.copy()
                 rp.insert(0, 'Corrida_ID', range(1, len(rp) + 1))
-
-                # --- RAMA CCD: si el diseno tiene puntos axiales, va a superficie de respuesta ---
-                if cols and resp and ce_rsm.es_diseno_ccd(rp, cols):
-                    st.session_state.df_ccd_raw = rp
-                    st.session_state.factores_ccd = list(cols)
-                    st.session_state.respuesta_ccd = list(resp)
-                    st.session_state.stage = 'ccd_full'
-                    st.rerun()
                 
                 # 2. Aplicar los niveles manuales del estudiante
                 for f in cols:
@@ -304,7 +276,7 @@ with st.sidebar:
                             rp[f] = rp[f].map({lo: -1, hi: 1})
 
                 # --- APLICAR SIMULACIÓN ---
-                if simular_datos and not es_ccd:
+                if simular_datos:
                     rp['Y_simulado'] = (b0 + 
                                       bA * rp[cols[0]] + 
                                       bB * rp[cols[1]] + 
@@ -1214,341 +1186,4 @@ elif st.session_state.stage == 'report':
     if c1.button("Volver a Diagnostico"): st.session_state.stage = 'diagnostics'; st.rerun()
     if c2.button("Empezar de nuevo"):
         for k in list(st.session_state.keys()): del st.session_state[k]
-        st.rerun()
-
-
-# ==================== RAMA CCD (SUPERFICIE DE RESPUESTA) ====================
-def _tabla_word_ccd(doc, df_t):
-    """Inserta un DataFrame como tabla en Word (sin depender de Pt externo)."""
-    from docx.shared import Pt
-    cols = list(df_t.columns)
-    t = doc.add_table(rows=1, cols=len(cols))
-    t.style = 'Table Grid'
-    for i, cn in enumerate(cols):
-        cell = t.rows[0].cells[i]
-        cell.text = str(cn)
-        for p in cell.paragraphs:
-            for run in p.runs:
-                run.font.bold = True
-                run.font.size = Pt(8)
-    for _, row in df_t.iterrows():
-        cells = t.add_row().cells
-        for i, cn in enumerate(cols):
-            v = row[cn]
-            cells[i].text = '\u2014' if pd.isna(v) else (f"{v:.4f}" if isinstance(v, float) else str(v))
-            for p in cells[i].paragraphs:
-                for run in p.runs:
-                    run.font.size = Pt(8)
-    doc.add_paragraph()
-
-if st.session_state.stage == 'ccd_full':
-    st.title("Superficie de Respuesta (CCD) - Modelo completo")
-    rawc = st.session_state.df_ccd_raw
-    facc = st.session_state.factores_ccd
-    respc = st.session_state.respuesta_ccd
-    st.info(f"Diseno CCD detectado: {len(rawc)} corridas | Factores: {', '.join(facc)}")
-
-    if st.button("Ajustar modelos completos", type='primary'):
-        Rs = {}
-        for r in respc:
-            Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False)
-        st.session_state.R_ccd_full = Rs
-        st.session_state.stage = 'ccd_refine'
-        st.rerun()
-
-    if st.button("Volver a datos"):
-        st.session_state.stage = 'upload'
-        st.rerun()
-
-elif st.session_state.stage == 'ccd_refine':
-    st.title("CCD - Refinar modelo (eliminacion hacia atras)")
-    rawc = st.session_state.df_ccd_raw
-    facc = st.session_state.factores_ccd
-    respc = st.session_state.respuesta_ccd
-    alfa = st.number_input("Alfa para eliminacion (p > alfa se elimina)", 0.01, 0.20, 0.05, 0.01)
-
-    if st.button("Aplicar eliminacion hacia atras", type='primary'):
-        with st.spinner("Ajustando..."):
-            Rs = {}
-            for r in respc:
-                Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, alpha_elim=alfa, eliminar=True)
-            st.session_state.R_ccd = Rs
-
-    Rs = st.session_state.get('R_ccd')
-    if Rs:
-        for r, R in Rs.items():
-            st.markdown(f"### Respuesta: {r}")
-            st.dataframe(R['anova'].round(4), use_container_width=True)
-            c1, c2 = st.columns(2)
-            c1.metric("R2", f"{R['R2']*100:.2f}%")
-            c2.metric("R2 ajustado", f"{R['R2_adj']*100:.2f}%")
-            if R['lof']:
-                ok_lof = R['lof']['p'] > 0.05
-                st.write(f"Falta de ajuste: F = {R['lof']['F']:.3f}, p = {R['lof']['p']:.4f} "
-                         + ("-> no significativa (buena)" if ok_lof else "-> SIGNIFICATIVA (revisar modelo)"))
-            else:
-                st.caption("Sin replicas: no se puede calcular la falta de ajuste (igual que en el articulo).")
-            st.markdown("**Ecuacion (unidades reales):**")
-            st.code(R['eq_uncoded'], language=None)
-
-        c1, c2 = st.columns(2)
-        if c1.button("Volver a modelo completo"):
-            st.session_state.stage = 'ccd_full'
-            st.rerun()
-        if c2.button("Ir a Diagnosticos y graficos", type='primary'):
-            st.session_state.stage = 'ccd_diag'
-            st.rerun()
-
-elif st.session_state.stage == 'ccd_diag':
-    st.title("CCD - Diagnosticos, contornos y optimizacion")
-    Rs = st.session_state.get('R_ccd')
-    if not Rs:
-        st.error("Primero debes refinar el modelo (paso anterior).")
-        st.stop()
-    respc = list(Rs.keys())
-    facc = Rs[respc[0]]['factores']
-    figs = {}
-
-    for r, R in Rs.items():
-        st.markdown(f"### Residuales - {r}")
-        fn = ce_rsm.graf_residuales_ccd(R)
-        figs[f'resid_{r}'] = fn
-        st.image(fn, use_container_width=True)
-
-    st.markdown("### Contornos individuales (cada uno con sus propios ejes)")
-    st.caption("1) Define los ejes de cada contorno y los del combinado. "
-               "2) Pulsa **Aplicar configuracion**. 3) Activa las casillas de mostrar, de arriba hacia abajo. "
-               "Para etiquetas con unidades (ej. Na2SeO3 (M)), usa 'Renombrar factores' en la barra lateral.")
-    with st.form("ccd_form_cfg"):
-        st.markdown("**A. Ejes de los contornos INDIVIDUALES** "
-                    "(independientes entre si; el/los factor(es) restante(s) queda(n) fijo(s)):")
-        ejes_ind = {}
-        for r in respc:
-            cx, cy = st.columns(2)
-            xi = cx.selectbox(f"Eje X - {r}", facc, index=0, key=f"xi_{r}")
-            yi_opts = [f for f in facc if f != xi]
-            yi = cy.selectbox(f"Eje Y - {r}", yi_opts, index=len(yi_opts) - 1, key=f"yi_{r}")
-            ejes_ind[r] = (xi, yi)
-
-        st.markdown("**B. Contorno COMBINADO** (elija los DOS factores de los ejes; "
-                    "el/los factor(es) restante(s) queda(n) fijo(s) automaticamente):")
-        c1f, c2f = st.columns(2)
-        f1 = c1f.selectbox("Eje X del combinado", facc, index=0, key="ccd_comb_x")
-        f2_opts = [f for f in facc if f != f1]
-        f2 = c2f.selectbox("Eje Y del combinado", f2_opts, index=len(f2_opts) - 1, key="ccd_comb_y")
-        fijo_sel = [f for f in facc if f not in (f1, f2)]
-        if len(fijo_sel) == 1:
-            st.caption(f"Combinado: varian X = **{f1}** e Y = **{f2}**; "
-                       f"queda fijo **{fijo_sel[0]}**.")
-        else:
-            st.caption(f"Combinado: varian X = **{f1}** e Y = **{f2}**; "
-                       f"quedan fijos: {', '.join(fijo_sel)}.")
-
-        st.markdown("**C. Valores de los factores cuando estan FIJOS** "
-                    "(se usan en los graficos donde ese factor NO esta en los ejes):")
-        fcols = st.columns(len(facc))
-        fijos = {}
-        for i, f in enumerate(facc):
-            codf = Rs[respc[0]]['coding'][f]
-            paso = max(codf['half'] / 10, 1e-6)
-            with fcols[i]:
-                fijos[f] = st.number_input(f, value=float(codf['c']),
-                                           step=paso, format="%.6g", key=f"fijo_{f}")
-        for f in facc:
-            usado = any(f in t.split('*') for R in Rs.values() for t in R['terms'])
-            if usado:
-                st.info(f"'{f}' esta en el modelo reducido: si algun grafico lo fija, "
-                        "ese valor SÍ afecta ese grafico.")
-            else:
-                st.caption(f"'{f}' fue eliminado del modelo como no significativo: "
-                           "fijarlo no afecta los resultados.")
-
-        estilo = st.radio("Estetica del grafico",
-                          ["Clasico (estilo articulo)", "Moderno (viridis)"],
-                          horizontal=True)
-        cmaps, niveles_txt = {}, {}
-        for r in respc:
-            cmaps[r] = st.selectbox(f"Colormap para {r}",
-                                    ["terrain", "RdYlGn", "jet", "viridis"],
-                                    index=0, key=f"cmap_{r}")
-            niveles_txt[r] = st.text_input(
-                f"Niveles de contorno para {r} (opcional, separados por comas)",
-                value="", key=f"niv_{r}",
-                placeholder="ej: 0,25,50,75,100,125,150,175,200,240")
-        st.form_submit_button("Aplicar configuracion", type='primary')
-
-    estilo_key = 'clasico' if estilo.startswith("Clasico") else 'moderno'
-
-    # Punto de validacion: se lee del estado de la sesion (la seccion para
-    # editarlo esta al final de la pantalla). Asi la estrella aplica a los
-    # graficos aunque la seccion visual este despues de ellos.
-    punto = {f1: float(st.session_state.get(f"pv_{f1}", Rs[respc[0]]['coding'][f1]['c'])),
-             f2: float(st.session_state.get(f"pv_{f2}", Rs[respc[0]]['coding'][f2]['c']))}
-    mostrar_estrella = bool(st.session_state.get('ccd_mostrar_punto', True))
-
-    def _star_para(xi, yi):
-        if not mostrar_estrella:
-            return None
-        return {xi: punto.get(xi, fijos.get(xi)), yi: punto.get(yi, fijos.get(yi))}
-
-    # ---- Contornos individuales (se generan PRIMERO) ----
-    mostrar_cont = st.checkbox("Mostrar contornos individuales", key='ccd_mostrar_cont')
-    if mostrar_cont:
-        for r, R in Rs.items():
-            xi, yi = ejes_ind[r]
-            if xi == yi:
-                st.error(f"Contorno de {r}: el eje X y el Y son el mismo factor ('{xi}'). "
-                         "Elige dos factores distintos en el formulario (seccion A).")
-                continue
-            txt = niveles_txt.get(r, '').strip()
-            niv = None
-            if txt:
-                try:
-                    niv = sorted(float(x) for x in txt.replace(';', ',').split(',') if x.strip())
-                    if len(niv) < 2:
-                        niv = None
-                except ValueError:
-                    niv = None
-                    st.warning(f"Niveles de {r} no validos; se usaran niveles automaticos.")
-            figs[f'contorno_{r}'] = ce_rsm.graf_contorno_ccd(
-                R, xi, yi, estilo=estilo_key, cmap=cmaps.get(r),
-                niveles=(niv if niv else None), punto=_star_para(xi, yi), fijos=fijos)
-            st.image(figs[f'contorno_{r}'], use_container_width=True)
-
-    # ---- Probar un punto ----
-    ejes_comb_ok = (f1 != f2) and (f2 in [f for f in facc if f != f1])
-    if not ejes_comb_ok:
-        st.error(f"Los ejes del combinado (X = {f1}, Y = {f2}) no son validos. "
-                 "Vuelve al formulario, revisa la seccion B y pulsa 'Aplicar configuracion'.")
-
-    # ---- Contorno combinado (se genera DESPUES) ----
-    st.markdown("### Contorno combinado (region de interes)")
-    st.caption("Define los rangos aceptables de cada respuesta y pulsa **Aplicar metas**.")
-    rawc = st.session_state.df_ccd_raw
-    with st.form("ccd_form_metas"):
-        rangos = {}
-        cc1, cc2 = st.columns(2)
-        for i, r in enumerate(respc):
-            rmin = float(rawc[r].min()); rmax = float(rawc[r].max())
-            paso = max((rmax - rmin) / 20, 1e-6)
-            with (cc1 if i % 2 == 0 else cc2):
-                lo = st.number_input(f"{r} - minimo aceptable", value=rmin,
-                                     step=paso, format="%.6g", key=f"lo_{r}")
-                hi = st.number_input(f"{r} - maximo aceptable", value=rmax,
-                                     step=paso, format="%.6g", key=f"hi_{r}")
-            rangos[r] = (lo, hi)
-        st.form_submit_button("Aplicar metas", type='primary')
-
-    mostrar_comb = st.checkbox("Mostrar contorno combinado", key='ccd_mostrar_comb')
-    if mostrar_comb and ejes_comb_ok:
-        figs['superposicion'] = ce_rsm.graf_superposicion_ccd(
-            list(Rs.values()), rangos, f1, f2, punto=_star_para(f1, f2), fijos=fijos)
-        st.image(figs['superposicion'], use_container_width=True)
-
-    st.markdown("### Probar un punto (opcional)")
-    st.caption(f"Escribe los valores de **{f1}** (eje X del combinado) y **{f2}** (eje Y) "
-               "en unidades reales y pulsa **Aplicar punto**. La estrella se dibuja en los graficos "
-               "de arriba (contornos individuales y combinado) y las predicciones se muestran aqui. "
-               "Los factores fijos usan los valores del formulario de configuracion.")
-    with st.form("ccd_form_punto"):
-        pcols = st.columns(2)
-        for i, f in enumerate([f1, f2]):
-            c_def = Rs[respc[0]]['coding'][f]['c']
-            with pcols[i]:
-                st.number_input(f"{f} (unidades del experimento)", value=float(c_def),
-                                step=0.05, format="%.6g", key=f"pv_{f}")
-        st.form_submit_button("Aplicar punto")
-
-    punto_vivo = {f1: float(st.session_state.get(f"pv_{f1}", Rs[respc[0]]['coding'][f1]['c'])),
-                  f2: float(st.session_state.get(f"pv_{f2}", Rs[respc[0]]['coding'][f2]['c']))}
-    mcols = st.columns(len(respc))
-    for i, (r, R) in enumerate(Rs.items()):
-        pfull = {f: fijos.get(f, R['coding'][f]['c']) for f in R['factores']}
-        pfull.update(punto_vivo)
-        with mcols[i]:
-            st.metric(f"Prediccion de {r} en el punto", f"{ce_rsm.predecir_ccd(R, pfull):.3f}")
-    st.checkbox("Mostrar estrella en los graficos", value=True, key='ccd_mostrar_punto')
-
-    st.markdown("### Optimizacion (opcional)")
-    st.caption("Configura los objetivos y pulsa **Aplicar objetivos**; "
-               "luego usa **Optimizar ahora** cuando quieras. No afecta los graficos.")
-    with st.form("ccd_form_obj"):
-        objetivos = {}
-        for r in respc:
-            rlo, rhi = rangos[r]
-            paso = max((rhi - rlo) / 20, 1e-6)
-            tipo = st.selectbox(f"Objetivo de {r}", ["max", "min", "target"],
-                                format_func=lambda t: {"max": "Maximizar", "min": "Minimizar",
-                                                       "target": "Apuntar a un target"}[t],
-                                key=f"obj_{r}")
-            o = {'tipo': tipo, 'lo': rlo, 'hi': rhi}
-            if tipo == 'target':
-                o['target'] = st.number_input(f"Target de {r}",
-                                              value=float((rlo + rhi) / 2),
-                                              step=paso, format="%.6g", key=f"tgt_{r}")
-            objetivos[r] = o
-        st.form_submit_button("Aplicar objetivos", type='primary')
-
-    if st.button("Optimizar ahora"):
-        opt = ce_rsm.optimizar_ccd(list(Rs.values()), objetivos)
-        st.session_state.opt_ccd = opt if opt is not None else 'SIN_SOLUCION'
-    opt = st.session_state.get('opt_ccd')
-    if opt == 'SIN_SOLUCION':
-        st.warning("No existe ningun punto que cumpla todas las metas a la vez.")
-    elif opt:
-        pred_txt = " | ".join(f"{k} = {v:.3f}" for k, v in opt['predicciones'].items())
-        st.success(f"Mejor punto (deseabilidad = {opt['deseabilidad']:.3f}): "
-                   f"{opt['punto']}  ->  {pred_txt}")
-
-
-    st.session_state.figs_ccd = figs
-    c1, c2 = st.columns(2)
-    if c1.button("Volver a Refinar"):
-        st.session_state.stage = 'ccd_refine'
-        st.rerun()
-    if c2.button("Ir a Reporte", type='primary'):
-        st.session_state.stage = 'ccd_report'
-        st.rerun()
-
-elif st.session_state.stage == 'ccd_report':
-    st.title("CCD - Reporte final")
-    Rs = st.session_state.get('R_ccd')
-    figs = st.session_state.get('figs_ccd', {})
-    nombre = st.session_state.get('nombre', 'Analisis CCD')
-
-    if not Rs:
-        st.error("No hay modelo refinado. Vuelve al paso anterior.")
-        st.stop()
-
-    if st.button("Generar informe Word", type='primary'):
-        doc = Document()
-        doc.add_heading(f"Informe de Superficie de Respuesta (CCD) - {nombre}", 0)
-        doc.add_paragraph(f"Fecha: {date.today().strftime('%Y-%m-%d')}")
-        doc.add_paragraph(f"Factores: {', '.join(Rs[list(Rs.keys())[0]]['factores'])}")
-        for r, R in Rs.items():
-            doc.add_heading(f"Respuesta: {r}", level=1)
-            doc.add_paragraph(f"R2 = {R['R2']:.4f} | R2 ajustado = {R['R2_adj']:.4f}")
-            if R['lof']:
-                doc.add_paragraph(f"Falta de ajuste: F = {R['lof']['F']:.3f}, p = {R['lof']['p']:.4f}")
-            doc.add_heading("ANOVA", level=2)
-            _tabla_word_ccd(doc, R['anova'].round(4))
-            doc.add_heading("Ecuacion de regresion (unidades reales)", level=2)
-            doc.add_paragraph(R['eq_uncoded'])
-        doc.add_heading("Graficos", level=1)
-        for key, fn in figs.items():
-            if fn and os.path.exists(fn):
-                doc.add_heading(key.replace('_', ' '), level=2)
-                doc.add_picture(fn, width=Inches(6))
-        buf_word = io.BytesIO()
-        doc.save(buf_word)
-        st.download_button("Descargar informe (Word)", buf_word.getvalue(),
-                           f"{nombre.replace(' ', '_')}_ccd.docx",
-                           "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-
-    c1, c2 = st.columns(2)
-    if c1.button("Volver a Diagnosticos"):
-        st.session_state.stage = 'ccd_diag'
-        st.rerun()
-    if c2.button("Empezar de nuevo"):
-        st.session_state.stage = 'upload'
         st.rerun()
