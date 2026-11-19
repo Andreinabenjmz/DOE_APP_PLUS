@@ -528,17 +528,26 @@ elif st.session_state.stage == 'encode':
 
     st.markdown("### Configurar niveles")
 
+    # Inicializar session_state ANTES de crear widgets para persistencia
+    for f in factores:
+        vals = sorted(raw[f].dropna().unique().tolist())
+        if es_cod:
+            st.session_state.setdefault(f"real_low_{f}", 0.0)
+            st.session_state.setdefault(f"real_high_{f}", 100.0)
+        else:
+            if len(vals) not in [2, 3]:
+                st.session_state.setdefault(f"low_{f}", float(min(vals)))
+                st.session_state.setdefault(f"high_{f}", float(max(vals)))
+
     for f in factores:
         vals = sorted(raw[f].dropna().unique().tolist())
         st.markdown(f"**Factor: {f}**")
 
         if es_cod:
             c1, c2 = st.columns(2)
-            # Leer valor previo de session_state si existe
-            def_val_low = st.session_state.get(f"real_low_{f}", 0.0)
-            def_val_high = st.session_state.get(f"real_high_{f}", 100.0)
-            v_bajo = c1.number_input(f"Valor real para -1 (bajo) - {f}", value=def_val_low, key=f"real_low_{f}")
-            v_alto = c2.number_input(f"Valor real para +1 (alto) - {f}", value=def_val_high, key=f"real_high_{f}")
+            # Usar solo key, NO value — Streamlit lee de session_state
+            v_bajo = c1.number_input(f"Valor real para -1 (bajo) - {f}", key=f"real_low_{f}")
+            v_alto = c2.number_input(f"Valor real para +1 (alto) - {f}", key=f"real_high_{f}")
             v_medio = (v_bajo + v_alto) / 2
             st.caption(f"Centro (0) calculado: **{v_medio:.4f}**")
             mapeos_niveles[f] = {v_bajo: -1, v_medio: 0, v_alto: 1}
@@ -554,10 +563,9 @@ elif st.session_state.stage == 'encode':
                 st.info(f"Detectados 3 niveles: Bajo={v_bajo}, Centro={v_medio}, Alto={v_alto}")
             else:
                 c1, c2 = st.columns(2)
-                def_val_low = st.session_state.get(f"low_{f}", float(min(vals)))
-                def_val_high = st.session_state.get(f"high_{f}", float(max(vals)))
-                v_bajo = c1.number_input(f"Nivel BAJO para {f}", value=def_val_low, key=f"low_{f}")
-                v_alto = c2.number_input(f"Nivel ALTO para {f}", value=def_val_high, key=f"high_{f}")
+                # Usar solo key, NO value — Streamlit lee de session_state
+                v_bajo = c1.number_input(f"Nivel BAJO para {f}", key=f"low_{f}")
+                v_alto = c2.number_input(f"Nivel ALTO para {f}", key=f"high_{f}")
                 v_medio = (v_bajo + v_alto) / 2
                 st.caption(f"Centro calculado: **{v_medio:.4f}**")
 
