@@ -1309,11 +1309,40 @@ elif st.session_state.stage == 'results':
             except Exception as e:
                 st.warning(f"No se pudo construir el ranking de condiciones: {e}")
 
+        
         # GRAFICOS
         st.markdown("---")
         st.markdown("## Graficos Diagnostico")
 
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Pareto", "Semi-normal", "Efectos Principales", "Interacciones", "Superficie 3D y Contorno", "Residuales"])
+        spec = None
+        with st.expander("🎯 Evaluar cumplimiento de especificacion (Objetivo ± Tolerancia)", expanded=False):
+            usar_spec = st.checkbox(
+                "Activar especificacion (Target ± Tolerancia)",
+                value=False,
+                key="usar_spec_factorial"
+            )
+            if usar_spec:
+                sc1, sc2 = st.columns(2)
+                target_val = sc1.number_input(
+                    "Objetivo (Target):",
+                    value=float(round(df['Y'].mean(), 2)),
+                    format="%.4g",
+                    key="spec_target"
+                )
+                tol_val = sc2.number_input(
+                    "Tolerancia (±):",
+                    value=1.0,
+                    min_value=0.0,
+                    format="%.4g",
+                    key="spec_tol"
+                )
+                spec = {'target': target_val, 'tol': tol_val}
+
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+            "Pareto", "Semi-normal", "Efectos Principales", "Interacciones",
+            "Superficie 3D y Contorno", "Residuales", "Especificacion"
+        ])
+        
 
         with tab1:
             try:
@@ -1333,7 +1362,8 @@ elif st.session_state.stage == 'results':
 
         with tab3:
             try:
-                fn = ce._gen_main_effects(R, spec=None, mapeos=st.session_state.mapeos_inversos, unidades=unidades)
+                
+                fn = ce._gen_main_effects(R, spec=spec, mapeos=st.session_state.mapeos_inversos, unidades=unidades)
                 st.image(fn)
             except Exception as e:
                 st.warning(f"No se pudieron generar efectos principales: {e}")
@@ -1436,7 +1466,31 @@ elif st.session_state.stage == 'results':
                 )
             except Exception as e:
                 st.warning(f"No se pudieron generar residuales: {e}")
-                    
+                
+        with tab7:
+            if spec is None:
+                st.info("Abre **'🎯 Evaluar cumplimiento de especificacion'** arriba de las pestañas y activa la casilla para generar el grafico (en Via 2 incluye tambien el punto central).")
+            else:
+                try:
+                    fn_spec = ce._gen_spec(df, R, spec)
+                    st.image(fn_spec, use_container_width=True)
+
+                    lo = spec['target'] - spec['tol']
+                    hi = spec['target'] + spec['tol']
+                    cond_spec = df.groupby(R['factores'], sort=False)['Y'].mean().reset_index()
+                    cond_spec['Cumple'] = cond_spec['Y'].apply(lambda v: 'Si' if lo <= v <= hi else 'No')
+                    n_ok = int((cond_spec['Cumple'] == 'Si').sum())
+                    n_tot = len(cond_spec)
+                    _info_box(
+                        "Cumplimiento de especificacion",
+                        f"**{n_ok} de {n_tot}** condiciones cumplen con el rango **[{lo:.4g}, {hi:.4g}]** (barras verdes). "
+                        "Las barras rojas quedan fuera de especificacion.",
+                        tipo='success' if n_ok > 0 else 'warning'
+                    )
+                    with st.expander("📋 Ver tabla de medias por condicion vs especificacion"):
+                        st.dataframe(cond_spec.round(4), use_container_width=True)
+                except Exception as e:
+                    st.warning(f"No se pudo generar el grafico de especificacion: {e}")            
 
         # PREDICCION
         st.markdown("---")
