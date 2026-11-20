@@ -85,6 +85,7 @@ def _detectar_columnas(raw):
         'replicate', 'replica', 'rep',
     }
     resp_names = {'y', 'response', 'respuesta', 'resp', 'rendimiento', 'yield', 'tamano', 'tamaño', 'potencial', 'zeta'}
+    resp_hints = ('rep', 'replica', 'block', 'bloque')
 
     for c in raw.columns:
         nombre_lower = str(c).strip().lower()
@@ -100,16 +101,15 @@ def _detectar_columnas(raw):
             descartar.append(c)
             continue
 
-        if nombre_lower in resp_names or any(x in nombre_lower for x in ['resp', 'yield', 'rend']):
-            if pd.api.types.is_numeric_dtype(raw[c]):
-                respuestas.append(c)
-                continue
+        es_resp_hint = (nombre_lower in resp_names or any(h in nombre_lower for h in resp_hints) or any(x in nombre_lower for x in ['resp', 'yield', 'rend']))
+        if es_resp_hint and pd.api.types.is_numeric_dtype(raw[c]):
+            respuestas.append(c)
+            continue
 
         if pd.api.types.is_numeric_dtype(raw[c]):
             if n_unicos in [2, 3]:
                 factores.append(c)
                 continue
-            # Detectar factores CCD rotacionales (4 o 5 niveles simetricos)
             if len(raw) >= 11 and n_unicos in [4, 5]:
                 s_num = np.sort(pd.to_numeric(raw[c], errors='coerce').dropna().unique())
                 if len(s_num) >= 4:
@@ -209,8 +209,7 @@ def _validar_analisis_vs_diseno(df_cod, factores, respuesta, analisis):
 
     return msgs
 
-
-def _sugerir_analisis(df_cod, factores, respuesta):
+def _sugerir_analisis(df_cod, factores, respuesta, n_respuestas=1):
     n = len(df_cod)
     if st.session_state.get('filas_centro_idx'):
         centros = len(st.session_state.filas_centro_idx)
@@ -222,9 +221,10 @@ def _sugerir_analisis(df_cod, factores, respuesta):
     if hasattr(ce_rsm, 'es_diseno_ccd') and ce_rsm.es_diseno_ccd(df_cod, factores):
         return 'ccd', f"Detectado diseno CCD ({n} corridas con puntos axiales y {centros} centros). Sugerencia: Superficie de Respuesta (CCD)."
     if centros > 0:
-        return 'factorial_via2', f"Detectado: {esquinas} esquinas + {centros} centros. Sugerencia: Via 2."
-    elif replicas > 0:
-        return 'factorial_via1', f"Detectado: {esquinas} esquinas con {replicas} grupos de replicas. Sugerencia: Via 1."
+        extra = f" × {n_respuestas} bloques/columnas" if n_respuestas >= 2 else ""
+        return 'factorial_via2', f"Detectado: {esquinas} esquinas + {centros} centro(s){extra}. Sugerencia: Via 2."
+    elif replicas > 0 or n_respuestas >= 2:
+        return 'factorial_via1', f"Detectado: {esquinas} esquinas con replicas ({max(replicas, n_respuestas)}). Sugerencia: Via 1."
     else:
         return 'factorial_via3', f"Detectado: {esquinas} esquinas sin replicas ni centros. Sugerencia: Via 3."
 
@@ -337,13 +337,50 @@ if st.session_state.stage == 'upload':
     """)
 
     uploaded = st.file_uploader("Sube tu archivo Excel o CSV", type=['xlsx', 'csv'])
+    with st.expander("📋 O pega tus datos directamente (copiados de Excel o texto)", expanded=False):
+        texto_pegado = st.text_area(
+            "Pega aqui la tabla con encabezados (separada por tabulaciones o comas):",
+            height=180,
+            key="texto_pegado_tabla"
+        )
+        usar_pegado = st.button("Cargar datos pegados", use_container_width=True)
+
+    raw_nuevo = None
+    msg_carga = ""
 
     if uploaded:
         try:
             if uploaded.name.endswith('.xlsx'):
-                raw = pd.read_excel(uploaded)
+                raw_nuevo = pd.read_excel(uploaded)
             else:
-                raw = pd.read_csv(uploaded)
+                raw_nuevo = pd.read_csv(uploaded)
+            msg_carga = f"Archivo cargado: {raw_nuevo.shape[0]} filas × {raw_nuevo.shape[1]} columnas"
+        except Exception as e:
+            st.error(f"Error al cargar el archivo: {e}")
+
+    with st.expander("📋 O pega tu tabla directamente (desde Excel o texto)", expanded=False):
+        txt_pegado = st.text_area(
+            "Pega aqui tus columnas y filas (con encabezados):",
+            height=180,
+            placeholder="Distancia\tRoll\tYaw\tBlock 1\tBlock 2\n-1\t-1\t-1\t19.5\t26.1\n1\t-1\t-1\t28.3\t30.4",
+            key="txt_tabla_pegada"
+        )
+        if st.button("📥 Cargar tabla pegada", type='primary', key="btn_cargar_pegado"):
+            if not txt_pegado.strip():
+                st.warning("Pega primero la tabla en el recuadro.")
+            else:
+                try:
+                    import io
+                    muestra = txt_pegado.strip()
+                    sep = '\t' if '\t' in muestra else (';' if ';' in muestra else (',' if ',' in muestra else r'\s+'))
+                    raw_nuevo = pd.read_csv(io.StringIO(muestra), sep=sep)
+                    msg_carga = f"Tabla pegada cargada: {raw_nuevo.shape[0]} filas × {raw_nuevo.shape[1]} columnas"
+                except Exception as e:
+                    st.error(f"No se pudo leer la tabla pegada: {e}")
+
+    if raw_nuevo is not None:
+        try:
+            raw = raw_nuevo.copy()
             raw.columns = raw.columns.astype(str).str.strip()
 
             # Reset limpio del archivo y analisis previo (conservando niveles_guardados y unidades_factores)
@@ -373,7 +410,7 @@ if st.session_state.stage == 'upload':
                        'confirm_no_centros', 'modo_sel'):
                 st.session_state.pop(wk, None)
 
-            st.success(f"Archivo cargado: {raw.shape[0]} filas × {raw.shape[1]} columnas")
+            st.success(msg_carga)
 
             fact_cands, resp_cands, descartados = _detectar_columnas(raw)
 
@@ -390,6 +427,7 @@ if st.session_state.stage == 'upload':
 
         except Exception as e:
             st.error(f"Error al cargar: {e}")
+
 
 
 # ---------- ETAPA 2: CONFIRMAR COLUMNAS ----------
@@ -486,6 +524,30 @@ elif st.session_state.stage == 'encode':
                   "Escribe los valores reales bajos/altos y sus unidades, y pulsa **💾 Guardar** para almacenarlos. "
                   "Una vez guardados, en el Paso 3B se confirmara tu matriz codificada aislada para el analisis.",
                   tipo='info')
+        if es_cod:
+        _info_box("Paso 3A: Matriz codificada detectada",
+                  "Tu archivo ya viene en escala codificada (-1, 0, +1). "
+                  "Si tienes los valores reales y unidades, configuralos abajo y pulsa **💾 Guardar**. "
+                  "Si es un ejercicio solo con datos codificados (-1, 0, +1) y no te dieron niveles bajos/altos, continua directo.",
+                  tipo='info')
+        if st.button("⏩ Continuar directo sin definir niveles reales (trabajar en -1, 0, +1)",
+                     type='primary', use_container_width=True):
+            df_cod_directo = raw.copy()
+            for f in factores:
+                df_cod_directo[f] = _to_numeric_clean(raw[f])
+            for r_c in respuestas:
+                df_cod_directo[r_c] = _to_numeric_clean(raw[r_c])
+            st.session_state.mapeos_niveles = {}
+            st.session_state.mapeos_inversos = {}
+            st.session_state.unidades_factores = {}
+            st.session_state.df_cod = df_cod_directo
+            st.session_state.df_real = df_cod_directo.copy()
+            st.session_state.df_work = df_cod_directo.copy()
+            st.session_state.niveles_confirmados_paso3 = True
+            st.session_state.centros_confirmados = False
+            st.session_state.filas_centro_idx = []
+            st.session_state.stage = 'analysis_select'
+            st.rerun()
     else:
         _info_box("Paso 3A: Matriz NO codificada detectada",
                   "Tu archivo tiene valores reales. Confirma los valores bajo (-1), alto (+1) y sus unidades, y pulsa **💾 Guardar**. "
@@ -757,7 +819,7 @@ elif st.session_state.stage == 'analysis_select':
         """)
 
     centros = len(st.session_state.get('filas_centro_idx', []))
-    sug_analisis, sug_msg = _sugerir_analisis(df_cod, factores, respuesta)
+    sug_analisis, sug_msg = _sugerir_analisis(df_cod, factores, respuesta, n_respuestas=len(respuestas))
     _info_box("Sugerencia del programa", sug_msg, tipo='tip')
 
     st.markdown("---")
@@ -830,10 +892,17 @@ elif st.session_state.stage == 'analysis_select':
             default=respuestas,
             key="sel_resp_ccd"
         )
+
     elif len(respuestas) > 1:
+        es_bloque_o_rep = any(
+            any(h in str(c).lower() for h in ('block', 'bloque', 'rep', 'replica'))
+            for c in respuestas
+        )
+        idx_multi_def = 1 if es_bloque_o_rep else 0
         modo_multi_fact = st.radio(
-            f"Seleccionaste {len(respuestas)} respuestas ({', '.join(respuestas)}). ¿Como usarlas en Factorial?",
-            ["Analizar una sola respuesta", "Unirlas como replicas de una misma respuesta"],
+            f"Seleccionaste {len(respuestas)} columnas de respuesta ({', '.join(respuestas)}). ¿Como usarlas en Factorial?",
+            ["Analizar una sola respuesta", "Unirlas como bloques / replicas de una misma respuesta"],
+            index=idx_multi_def,
             horizontal=True,
             key="modo_multi_fact"
         )
@@ -1106,6 +1175,8 @@ elif st.session_state.stage == 'results':
             if eq_real:
                 st.markdown("**En unidades reales (no codificadas, con tus unidades guardadas):**")
                 st.code(eq_real, language='text')
+            else:
+                st.caption("Modo codificado (-1, 0, +1): no se definieron niveles reales para traducir la ecuacion.")
 
             if hasattr(st, "copy_button"):
                 st.copy_button("Copiar ecuacion", eq_real or eq_cod, key="copy_eq")
@@ -1328,9 +1399,14 @@ elif st.session_state.stage == 'results':
         st.markdown("## Prediccion")
         _info_box("Prediccion del modelo", "Introduce los niveles de los factores para predecir la respuesta.", tipo='info')
 
+        tiene_reales_pred = any(
+            f in st.session_state.mapeos_inversos and -1 in st.session_state.mapeos_inversos[f]
+            for f in factores
+        )
+        lbl_libre = "Ingresar valor real libre" if tiene_reales_pred else "Ingresar valor codificado (-1 a +1)"
         modo_pred = st.radio(
             "Como quieres ingresar los valores para predecir?",
-            ["Seleccionar nivel (Bajo / Centro / Alto)", "Ingresar valor real libre"],
+            ["Seleccionar nivel (Bajo / Centro / Alto)", lbl_libre],
             horizontal=True,
             key="modo_pred_input"
         )
@@ -1341,17 +1417,26 @@ elif st.session_state.stage == 'results':
             u = unidades.get(f, '').strip()
             etiqueta = f"{f} ({u})" if u else f
             suf_u = f" {u}" if u else ""
-            if f in st.session_state.mapeos_inversos and -1 in st.session_state.mapeos_inversos[f]:
-                mapeo = st.session_state.mapeos_inversos[f]
-                if "Seleccionar nivel" in modo_pred:
+            mapeo = st.session_state.mapeos_inversos.get(f, {})
+            tiene_m = (-1 in mapeo and 1 in mapeo)
+
+            if "Seleccionar nivel" in modo_pred:
+                if tiene_m:
                     opts = [
                         (-1, f"Bajo ({mapeo.get(-1, -1)}{suf_u})"),
                         (0, f"Centro ({mapeo.get(0, 0)}{suf_u})"),
                         (1, f"Alto ({mapeo.get(1, 1)}{suf_u})")
                     ]
-                    sel = pred_cols[i].selectbox(etiqueta, opts, format_func=lambda x: x[1], key=f"pred_{f}")
-                    niveles[f] = sel[0]
                 else:
+                    opts = [
+                        (-1, "Bajo (-1)"),
+                        (0, "Centro (0)"),
+                        (1, "Alto (+1)")
+                    ]
+                sel = pred_cols[i].selectbox(etiqueta, opts, format_func=lambda x: x[1], key=f"pred_{f}")
+                niveles[f] = sel[0]
+            else:
+                if tiene_m:
                     v_real_in = pred_cols[i].number_input(
                         etiqueta,
                         value=float(mapeo.get(0, 0.0)),
@@ -1361,9 +1446,15 @@ elif st.session_state.stage == 'results':
                     )
                     rango = (mapeo[1] - mapeo[-1]) / 2.0
                     niveles[f] = (v_real_in - mapeo[0]) / rango if rango != 0 else 0.0
-            else:
-                niveles[f] = pred_cols[i].number_input(etiqueta, value=0.0, key=f"pred_{f}")
-
+                else:
+                    niveles[f] = pred_cols[i].number_input(
+                        f"{etiqueta} [codificado]",
+                        value=0.0,
+                        min_value=-1.0,
+                        max_value=1.0,
+                        step=0.1,
+                        key=f"pred_cod_{f}"
+                    )
         try:
             y_pred = ce.predecir_y_combinacion(niveles, R)
             st.success(f"**Respuesta predicha: {y_pred:.4f}**")
