@@ -1114,7 +1114,7 @@ elif st.session_state.stage == 'results':
 
         # RANKING DE EFECTOS Y CORRIDAS
         st.markdown("---")
-        st.markdown("## Ranking de Efectos y de corridas")
+        st.markdown("## Ranking de Efectos y Corridas")
         # RANKING DE EFECTOS (EN CAJITA DESPLEGABLE)
         with st.expander("📊 Ver Ranking de Efectos (Balance Neto)", expanded=False):
             try:
