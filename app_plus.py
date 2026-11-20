@@ -1196,7 +1196,7 @@ elif st.session_state.stage == 'results':
         st.markdown("---")
         st.markdown("## Graficos Diagnostico")
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Pareto", "Semi-normal", "Efectos Principales", "Interacciones", "Superficie 3D y Contorno", "Residuales"])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Pareto", "Semi-normal", "Efectos Principales", "Interacciones", "Superficie 3D y Contorno", "Residuales"])
 
         with tab1:
             try:
