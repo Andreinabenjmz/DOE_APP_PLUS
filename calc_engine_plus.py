@@ -1069,21 +1069,26 @@ def _gen_spec(df, R, spec):
     ax.axhline(spec['target'], color='green', linestyle='--', label=f"Objetivo {spec['target']}")
     ax.axhspan(lo, hi, alpha=0.15, color='green', label=f"Spec [{lo}, {hi}]")
 
+    
+    y_max = max(float(cond['Y'].max()), float(hi))
+    y_min = min(0.0, float(cond['Y'].min()), float(lo))
+    y_span = max(y_max - y_min, 1e-6)
+    ax.set_ylim(y_min, y_max + 0.16 * y_span)
+
     ax.set_xticks(range(len(cond)))
     ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
     ax.set_ylabel('Media de Y')
     ax.set_title('Medias por condicion vs Spec')
-    ax.legend(loc='upper right')
+    ax.legend(loc='upper right', framealpha=0.92)
 
     for i, v in enumerate(cond['Y']):
-        ax.text(i, v + 0.3, f'{v:.2f}', ha='center', fontsize=8)
+        ax.text(i, v + 0.015 * y_span, f'{v:.2f}', ha='center', va='bottom', fontsize=8.5, fontweight='bold')
 
     plt.tight_layout()
     fn = 'especificacion.png'
     plt.savefig(fn, bbox_inches='tight')
     plt.close()
     return fn
-
 
 # ---------- Ecuacion ----------
 def _ecuacion_str(R, df=None):
