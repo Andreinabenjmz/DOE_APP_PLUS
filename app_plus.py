@@ -435,6 +435,7 @@ elif st.session_state.stage == 'preview':
         st.warning("Selecciona al menos 2 factores.")
     elif len(respuestas) == 0:
         st.warning("Selecciona al menos 1 variable de respuesta.")
+
     else:
         factores_cambiaron = (factores != st.session_state.factores)
         st.session_state.factores = factores
@@ -442,9 +443,6 @@ elif st.session_state.stage == 'preview':
         st.session_state.respuesta = respuestas[0]
         if factores_cambiaron:
             st.session_state.niveles_confirmados_paso3 = False
-
-        es_cod_auto = _es_codificada(raw, factores)
-        fmt_auto_txt = "Matriz codificada (-1, 0, +1)" if es_cod_auto else "Matriz NO codificada (valores reales)"
 
         es_cod = _es_codificada(raw, factores)
         st.session_state.es_codificada = es_cod
@@ -459,21 +457,6 @@ elif st.session_state.stage == 'preview':
         st.markdown(f"""
         **Formato detectado:** {'Matriz codificada (-1, 0, +1)' if es_cod else 'Matriz NO codificada (valores reales)'}
         """)
-     
-        if "Ya viene codificada" in modo_fmt:
-            es_cod = True
-        elif "valores reales" in modo_fmt:
-            es_cod = False
-        else:
-            es_cod = es_cod_auto
-        st.session_state.es_codificada = es_cod
-
-        cols_mostrar = []
-        if st.session_state.corrida_col:
-            cols_mostrar.append(st.session_state.corrida_col)
-        cols_mostrar.extend(factores)
-        cols_mostrar.extend(respuestas)
-        st.dataframe(raw[cols_mostrar], use_container_width=True)
 
         st.markdown("---")
         nav_c = st.columns([1, 3])
