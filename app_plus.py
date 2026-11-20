@@ -1368,6 +1368,7 @@ elif st.session_state.stage == 'results':
             "Pareto", "Semi-normal", "Efectos Principales", "Interacciones",
             "Superficie 3D y Contorno", "Residuales", "Especificacion"
         ])
+        
 
         with tab1:
             try:
