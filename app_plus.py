@@ -1112,14 +1112,16 @@ elif st.session_state.stage == 'results':
         except Exception as e:
             st.warning(f"No se pudo generar ecuacion: {e}")
 
-        # RANKING
+        # RANKING DE EFECTOS Y CORRIDAS
         st.markdown("---")
-        st.markdown("## Ranking de Efectos")
-        try:
-            ranking = ce.generar_tabla_balance_neto(R)
-            st.dataframe(ranking, use_container_width=True)
-        except Exception as e:
-            st.warning(f"No se pudo generar ranking: {e}")
+        st.markdown("## Ranking de Efectos y de corridas")
+        # RANKING DE EFECTOS (EN CAJITA DESPLEGABLE)
+        with st.expander("📊 Ver Ranking de Efectos (Balance Neto)", expanded=False):
+            try:
+                ranking = ce.generar_tabla_balance_neto(R)
+                st.dataframe(ranking, use_container_width=True)
+            except Exception as e:
+                st.warning(f"No se pudo generar ranking: {e}")
 
         # RANKING DE MEJORES CONDICIONES OBSERVADAS (TOP N)
         with st.expander("🏆 Ranking de Condiciones Observadas (Real vs. Ecuación)", expanded=False):
