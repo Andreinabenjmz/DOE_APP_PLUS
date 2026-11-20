@@ -824,18 +824,14 @@ def _gen_main_effects(R, spec=None, mapeos=None, unidades=None):
         unidad = (unidades or {}).get(f, '').strip()
         etiqueta_f = f"{f} ({unidad})" if unidad else f
 
+        ax.plot([-1, 1], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
+        ax.set_xticks([-1, 1])
         if mapeos and f in mapeos and -1 in mapeos[f] and 1 in mapeos[f]:
-            v_low = mapeos[f][-1]
-            v_high = mapeos[f][1]
-            ax.plot([v_low, v_high], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
-            ax.set_xticks([v_low, v_high])
-            ax.set_xticklabels([f'{v_low}', f'{v_high}'])
-            ax.set_xlabel(etiqueta_f)
+            ax.set_xticklabels([f"{mapeos[f][-1]}", f"{mapeos[f][1]}"])
         else:
-            ax.plot([-1, 1], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
-            ax.set_xticks([-1, 1])
             ax.set_xticklabels(['-1', '+1'])
-            ax.set_xlabel(etiqueta_f)
+        ax.set_xlabel(etiqueta_f)
+        
 
         if i == 0:
             ax.set_ylabel('Media de Y')
@@ -893,19 +889,21 @@ def _gen_interactions(R, custom_order=None, mapeos=None, unidades=None, eje_x_po
                 suf_u_leg = f" {u_leg}" if u_leg else ""
 
                 # Usar valores reales si hay mapeos
+
                 if mapeos and x_fac in mapeos and leg_fac in mapeos:
                     vx_low = mapeos[x_fac].get(-1, -1)
                     vx_high = mapeos[x_fac].get(1, 1)
                     vl_low = mapeos[leg_fac].get(-1, -1)
                     vl_high = mapeos[leg_fac].get(1, 1)
 
-                    ax.plot([vx_low, vx_high], y_low,
+                    ax.plot([-1, 1], y_low,
                             'o-', color='#90CAF9', markersize=8, linewidth=2,
                             label=f'{leg_fac} = {vl_low}{suf_u_leg}')
-                    ax.plot([vx_low, vx_high], y_high,
+                    ax.plot([-1, 1], y_high,
                             's-', color='#EF9A9A', markersize=8, linewidth=2,
                             label=f'{leg_fac} = {vl_high}{suf_u_leg}')
-                    ax.set_xticks([vx_low, vx_high])
+                    ax.set_xticks([-1, 1])
+                    ax.set_xticklabels([f'{vx_low}', f'{vx_high}'])
                     ax.set_xlabel(lbl_x)
                 else:
                     ax.plot([-1, 1], y_low, 'o-', color='#90CAF9',
@@ -915,6 +913,7 @@ def _gen_interactions(R, custom_order=None, mapeos=None, unidades=None, eje_x_po
                     ax.set_xticks([-1, 1])
                     ax.set_xticklabels([f'{x_fac} = -1', f'{x_fac} = +1'])
                     ax.set_xlabel(lbl_x)
+
 
                 ax.set_ylabel('Media de Y')
                 ax.legend(loc='best', framealpha=0.9)
@@ -1125,18 +1124,31 @@ def ecuacion_no_codificada(R, mapeos_inversos, unidades=None):
 
     factores = R['factores']
     m, r = {}, {}
+    factores = R['factores']
+    m, r, cualitativos = {}, {}, {}
     for f in factores:
         if f not in mapeos_inversos or -1 not in mapeos_inversos[f] or 1 not in mapeos_inversos[f]:
             return None
-        v_low = float(mapeos_inversos[f][-1])
-        v_high = float(mapeos_inversos[f][1])
-        rango = (v_high - v_low) / 2.0
-        if rango == 0:
-            return None
-        m[f] = (v_low + v_high) / 2.0
-        r[f] = rango
+        try:
+            v_low = float(mapeos_inversos[f][-1])
+            v_high = float(mapeos_inversos[f][1])
+            rango = (v_high - v_low) / 2.0
+            if rango == 0:
+                return None
+            m[f] = (v_low + v_high) / 2.0
+            r[f] = rango
+        except (TypeError, ValueError):
+            m[f] = 0.0
+            r[f] = 1.0
+            cualitativos[f] = (mapeos_inversos[f][-1], mapeos_inversos[f][1])
+
+    if len(cualitativos) == len(factores):
+        return None
 
     def _lbl(f):
+        if f in cualitativos:
+            vl, vh = cualitativos[f]
+            return f"{f} [-1={vl}, +1={vh}]"
         u = (unidades or {}).get(f, '').strip()
         return f"{f} ({u})" if u else f
 
