@@ -824,14 +824,18 @@ def _gen_main_effects(R, spec=None, mapeos=None, unidades=None):
         unidad = (unidades or {}).get(f, '').strip()
         etiqueta_f = f"{f} ({unidad})" if unidad else f
 
-        ax.plot([-1, 1], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
-        ax.set_xticks([-1, 1])
         if mapeos and f in mapeos and -1 in mapeos[f] and 1 in mapeos[f]:
-            ax.set_xticklabels([f"{mapeos[f][-1]}", f"{mapeos[f][1]}"])
+            v_low = mapeos[f][-1]
+            v_high = mapeos[f][1]
+            ax.plot([v_low, v_high], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
+            ax.set_xticks([v_low, v_high])
+            ax.set_xticklabels([f'{v_low}', f'{v_high}'])
+            ax.set_xlabel(etiqueta_f)
         else:
+            ax.plot([-1, 1], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
+            ax.set_xticks([-1, 1])
             ax.set_xticklabels(['-1', '+1'])
-        ax.set_xlabel(etiqueta_f)
-        
+            ax.set_xlabel(etiqueta_f)
 
         if i == 0:
             ax.set_ylabel('Media de Y')
@@ -889,21 +893,19 @@ def _gen_interactions(R, custom_order=None, mapeos=None, unidades=None, eje_x_po
                 suf_u_leg = f" {u_leg}" if u_leg else ""
 
                 # Usar valores reales si hay mapeos
-
                 if mapeos and x_fac in mapeos and leg_fac in mapeos:
                     vx_low = mapeos[x_fac].get(-1, -1)
                     vx_high = mapeos[x_fac].get(1, 1)
                     vl_low = mapeos[leg_fac].get(-1, -1)
                     vl_high = mapeos[leg_fac].get(1, 1)
 
-                    ax.plot([-1, 1], y_low,
+                    ax.plot([vx_low, vx_high], y_low,
                             'o-', color='#90CAF9', markersize=8, linewidth=2,
                             label=f'{leg_fac} = {vl_low}{suf_u_leg}')
-                    ax.plot([-1, 1], y_high,
+                    ax.plot([vx_low, vx_high], y_high,
                             's-', color='#EF9A9A', markersize=8, linewidth=2,
                             label=f'{leg_fac} = {vl_high}{suf_u_leg}')
-                    ax.set_xticks([-1, 1])
-                    ax.set_xticklabels([f'{vx_low}', f'{vx_high}'])
+                    ax.set_xticks([vx_low, vx_high])
                     ax.set_xlabel(lbl_x)
                 else:
                     ax.plot([-1, 1], y_low, 'o-', color='#90CAF9',
@@ -913,7 +915,6 @@ def _gen_interactions(R, custom_order=None, mapeos=None, unidades=None, eje_x_po
                     ax.set_xticks([-1, 1])
                     ax.set_xticklabels([f'{x_fac} = -1', f'{x_fac} = +1'])
                     ax.set_xlabel(lbl_x)
-
 
                 ax.set_ylabel('Media de Y')
                 ax.legend(loc='best', framealpha=0.9)
@@ -1068,26 +1069,21 @@ def _gen_spec(df, R, spec):
     ax.axhline(spec['target'], color='green', linestyle='--', label=f"Objetivo {spec['target']}")
     ax.axhspan(lo, hi, alpha=0.15, color='green', label=f"Spec [{lo}, {hi}]")
 
-    
-    y_max = max(float(cond['Y'].max()), float(hi))
-    y_min = min(0.0, float(cond['Y'].min()), float(lo))
-    y_span = max(y_max - y_min, 1e-6)
-    ax.set_ylim(y_min, y_max + 0.16 * y_span)
-
     ax.set_xticks(range(len(cond)))
     ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
     ax.set_ylabel('Media de Y')
     ax.set_title('Medias por condicion vs Spec')
-    ax.legend(loc='upper right', framealpha=0.92)
+    ax.legend(loc='upper right')
 
     for i, v in enumerate(cond['Y']):
-        ax.text(i, v + 0.015 * y_span, f'{v:.2f}', ha='center', va='bottom', fontsize=8.5, fontweight='bold')
+        ax.text(i, v + 0.3, f'{v:.2f}', ha='center', fontsize=8)
 
     plt.tight_layout()
     fn = 'especificacion.png'
     plt.savefig(fn, bbox_inches='tight')
     plt.close()
     return fn
+
 
 # ---------- Ecuacion ----------
 def _ecuacion_str(R, df=None):
@@ -1124,31 +1120,18 @@ def ecuacion_no_codificada(R, mapeos_inversos, unidades=None):
 
     factores = R['factores']
     m, r = {}, {}
-    factores = R['factores']
-    m, r, cualitativos = {}, {}, {}
     for f in factores:
         if f not in mapeos_inversos or -1 not in mapeos_inversos[f] or 1 not in mapeos_inversos[f]:
             return None
-        try:
-            v_low = float(mapeos_inversos[f][-1])
-            v_high = float(mapeos_inversos[f][1])
-            rango = (v_high - v_low) / 2.0
-            if rango == 0:
-                return None
-            m[f] = (v_low + v_high) / 2.0
-            r[f] = rango
-        except (TypeError, ValueError):
-            m[f] = 0.0
-            r[f] = 1.0
-            cualitativos[f] = (mapeos_inversos[f][-1], mapeos_inversos[f][1])
-
-    if len(cualitativos) == len(factores):
-        return None
+        v_low = float(mapeos_inversos[f][-1])
+        v_high = float(mapeos_inversos[f][1])
+        rango = (v_high - v_low) / 2.0
+        if rango == 0:
+            return None
+        m[f] = (v_low + v_high) / 2.0
+        r[f] = rango
 
     def _lbl(f):
-        if f in cualitativos:
-            vl, vh = cualitativos[f]
-            return f"{f} [-1={vl}, +1={vh}]"
         u = (unidades or {}).get(f, '').strip()
         return f"{f} ({u})" if u else f
 
@@ -1535,6 +1518,5 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)', nombres_reales=None,
     plt.savefig(fn, bbox_inches='tight', dpi=150)
     plt.close()
     return fn, x_opt, y_opt, z_opt
-
 
 
