@@ -828,26 +828,22 @@ def _gen_main_effects(R, spec=None, mapeos=None, unidades=None):
             v_low = mapeos[f][-1]
             v_high = mapeos[f][1]
             ax.plot([v_low, v_high], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
-            ax.set_xticks([v_low, v_high])
-            ax.set_xticklabels([f'{v_low}', f'{v_high}'])
-            ax.set_xlabel(etiqueta_f)
-        else:
-            ax.plot([-1, 1], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
-            ax.set_xticks([-1, 1])
-            ax.set_xticklabels(['-1', '+1'])
-            ax.set_xlabel(etiqueta_f)
+            y_max = max(float(cond['Y'].max()), float(hi))
+    y_min = min(0.0, float(cond['Y'].min()), float(lo))
+    y_span = max(y_max - y_min, 1e-6)
+    ax.set_ylim(y_min, y_max + 0.16 * y_span)
 
-        if i == 0:
-            ax.set_ylabel('Media de Y')
-        ax.set_title(f'Efecto principal: {etiqueta_f}')
-        ax.grid(alpha=0.3)
+    ax.set_xticks(range(len(cond)))
+    ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
+    ax.set_ylabel('Media de Y')
+    ax.set_title('Medias por condicion vs Spec')
+    ax.legend(loc='upper right', framealpha=0.92)
 
-        if spec:
-            ax.axhspan(spec['target'] - spec['tol'], spec['target'] + spec['tol'],
-                       alpha=0.1, color='green')
+    for i, v in enumerate(cond['Y']):
+        ax.text(i, v + 0.015 * y_span, f'{v:.2f}', ha='center', va='bottom', fontsize=8.5, fontweight='bold')
 
     plt.tight_layout()
-    fn = 'efectos_principales.png'
+    fn = 'especificacion.png'
     plt.savefig(fn, bbox_inches='tight')
     plt.close()
     return fn
