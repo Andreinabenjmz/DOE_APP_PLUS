@@ -507,87 +507,77 @@ elif st.session_state.stage == 'preview':
                 st.session_state.stage = 'encode'
                 st.rerun()
 
-
-# ---------- ETAPA 3: GUARDAR NIVELES/UNIDADES (3A) Y MATRIZ CODIFICADA AISLADA (3B) ----------
+# ---------- ETAPA 3: NIVELES, UNIDADES Y MATRIZ CODIFICADA ----------
 elif st.session_state.stage == 'encode':
     st.title("3. Niveles Reales, Unidades y Matriz Codificada")
 
     raw = st.session_state.raw
     factores = st.session_state.factores
-    respuestas = st.session_state.respuestas if st.session_state.respuestas else ([st.session_state.respuesta] if st.session_state.respuesta else [])
-    respuesta = respuestas[0]
+    respuestas = st.session_state.get('respuestas') or (
+        [st.session_state.respuesta] if st.session_state.get('respuesta') else []
+    )
     es_cod = st.session_state.es_codificada
 
     if es_cod:
-        _info_box("Paso 3A: Matriz codificada detectada",
-                  "Tu archivo ya viene en escala codificada (-1, 0, +1). "
-                  "Escribe los valores reales bajos/altos y sus unidades, y pulsa **💾 Guardar** para almacenarlos. "
-                  "Una vez guardados, en el Paso 3B se confirmara tu matriz codificada aislada para el analisis.",
-                  tipo='info')
-        if es_cod:
-        _info_box("Paso 3A: Matriz codificada detectada",
-                  "Tu archivo ya viene en escala codificada (-1, 0, +1). "
-                  "Si tienes los valores reales y unidades, configuralos abajo y pulsa **💾 Guardar**. "
-                  "Si es un ejercicio solo con datos codificados (-1, 0, +1) y no te dieron niveles bajos/altos, continua directo.",
-                  tipo='info')
-        if st.button("⏩ Continuar directo sin definir niveles reales (trabajar en -1, 0, +1)",
-                     type='primary', use_container_width=True):
-            df_cod_directo = raw.copy()
+        _info_box(
+            "Paso 3A: Matriz codificada detectada",
+            "Tu matriz ya esta en escala codificada (-1, 0, +1). "
+            "Si conoces los valores reales bajos y altos, configuralos abajo y pulsa **Guardar**. "
+            "Si estas resolviendo un ejercicio sin niveles reales definidos, puedes continuar directo.",
+            tipo='info'
+        )
+
+        if st.button(
+            "⏩ Continuar directo sin definir niveles reales (usar solo -1, 0, +1)",
+            use_container_width=True,
+            key="btn_saltar_niveles"
+        ):
+            df_cod = raw.copy()
             for f in factores:
-                df_cod_directo[f] = _to_numeric_clean(raw[f])
-            for r_c in respuestas:
-                df_cod_directo[r_c] = _to_numeric_clean(raw[r_c])
+                df_cod[f] = pd.to_numeric(df_cod[f], errors='coerce')
+            st.session_state.df_cod = df_cod.copy()
+            st.session_state.df_real = df_cod.copy()
+            st.session_state.df_work = df_cod.copy()
             st.session_state.mapeos_niveles = {}
             st.session_state.mapeos_inversos = {}
             st.session_state.unidades_factores = {}
-            st.session_state.df_cod = df_cod_directo
-            st.session_state.df_real = df_cod_directo.copy()
-            st.session_state.df_work = df_cod_directo.copy()
             st.session_state.niveles_confirmados_paso3 = True
             st.session_state.centros_confirmados = False
             st.session_state.filas_centro_idx = []
             st.session_state.stage = 'analysis_select'
             st.rerun()
-    else:
-        _info_box("Paso 3A: Matriz NO codificada detectada",
-                  "Tu archivo tiene valores reales. Confirma los valores bajo (-1), alto (+1) y sus unidades, y pulsa **💾 Guardar**. "
-                  "Despues de guardar, en el Paso 3B se generara la matriz codificada (-1, 0, +1) para el analisis.",
-                  tipo='info')
-    with st.expander("📖 ¿Por qué codificamos a -1, 0 y +1? (Escala de factores y escalamiento)"):
-        st.markdown("""
-        - **Misma escala para todos los factores:** En el laboratorio cada variable tiene unidades y magnitudes muy distintas (ej. tiempo en `15–120 min` frente a pH `5.5–7.4`). Llevarlas a `-1` (bajo), `0` (centro) y `+1` (alto) elimina el efecto de escala y permite comparar directamente qué factor pesa más.
-        - **Ortogonalidad:** En escala codificada los factores son independientes entre sí, evitando errores numéricos en la regresión.
-        - **Escalamiento del estudio:** Si en este análisis factorial detectas **curvatura significativa**, el siguiente paso lógico es escalar hacia un diseño **CCD (Superficie de Respuesta)** para encontrar el punto óptimo real antes de validar en laboratorio/planta.
-        """)
 
-    head_c1, head_c2 = st.columns([3, 1])
-    with head_c1:
-        st.markdown("### 3A. Configurar y guardar niveles reales y unidades")
-    with head_c2:
-        if st.button("🗑️ Borrar valores (volver al default)", use_container_width=True,
-                     help="Restablece los niveles bajos, altos y unidades a sus valores por defecto"):
-            _limpiar_niveles_y_widgets(factores)
-            st.rerun()
+        st.markdown("---")
+        head_c1, head_c2 = st.columns([3, 1])
+        with head_c1:
+            st.markdown("### Opcional: Configurar niveles reales y unidades")
+        with head_c2:
+            if st.button(
+                "🗑️ Borrar valores (volver al default)",
+                use_container_width=True,
+                help="Restablece los niveles bajos, altos y unidades a sus valores por defecto"
+            ):
+                _limpiar_niveles_y_widgets(factores)
+                st.session_state.niveles_confirmados_paso3 = False
+                st.rerun()
 
-    # Formulario independiente para configurar y GUARDAR sin mezclar con el paso de la matriz codificada
-    with st.form("form_guardar_niveles"):
-        valores_form = {}
-        for f in factores:
-            vals = sorted(_to_numeric_clean(raw[f]).dropna().unique().tolist())
-            st.markdown(f"**Factor: {f}**")
-
-            if es_cod:
-                guardado = st.session_state.niveles_guardados.get(f, {'low': 0.0, 'high': 100.0, 'unit': ''})
+        with st.form("form_guardar_niveles"):
+            inputs_niveles = {}
+            for f in factores:
+                guardado = st.session_state.niveles_guardados.get(
+                    f, {'low': -1.0, 'high': 1.0, 'unit': ''}
+                )
+                st.markdown(f"**Factor: {f}**")
                 c1, c2, c3 = st.columns([2, 2, 1.5])
                 v_bajo = c1.number_input(
                     f"Valor real para -1 (bajo) - {f}",
-                    value=float(guardado.get('low', 0.0)),
+                    value=float(guardado.get('low', -1.0)),
                     format="%.4f",
                     key=f"real_low_{f}"
                 )
                 v_alto = c2.number_input(
                     f"Valor real para +1 (alto) - {f}",
-                    value=float(guardado.get('high', 100.0)),
+                    value=float(guardado.get('high', 1.0)),
                     format="%.4f",
                     key=f"real_high_{f}"
                 )
@@ -597,127 +587,181 @@ elif st.session_state.stage == 'encode':
                     placeholder="ej: ppm, °C, min, %",
                     key=f"unit_{f}"
                 )
-            else:
-                default_low = float(min(vals)) if len(vals) > 0 else 0.0
-                default_high = float(max(vals)) if len(vals) > 0 else 100.0
-                guardado = st.session_state.niveles_guardados.get(f, {'low': default_low, 'high': default_high, 'unit': ''})
-                c1, c2, c3 = st.columns([2, 2, 1.5])
-                v_bajo = c1.number_input(
-                    f"Nivel BAJO (-1) para {f}",
-                    value=float(guardado.get('low', default_low)),
-                    format="%.4f",
-                    key=f"low_{f}"
-                )
-                v_alto = c2.number_input(
-                    f"Nivel ALTO (+1) para {f}",
-                    value=float(guardado.get('high', default_high)),
-                    format="%.4f",
-                    key=f"high_{f}"
-                )
-                unidad = c3.text_input(
-                    f"Unidad - {f}",
-                    value=str(guardado.get('unit', '')),
-                    placeholder="ej: ppm, °C, min, %",
-                    key=f"unit_{f}"
-                )
+                inputs_niveles[f] = (v_bajo, v_alto, unidad)
 
-            valores_form[f] = (float(v_bajo), float(v_alto), str(unidad).strip())
+            guardar_niv = st.form_submit_button("💾 Guardar", type='primary', use_container_width=True)
 
-        guardar_btn = st.form_submit_button("💾 Guardar valores y preparar matriz", type='primary', use_container_width=True)
-
-    if guardar_btn:
-        error_rango = [f for f, (vb, va, _) in valores_form.items() if abs(va - vb) < 1e-12]
-        if error_rango:
-            st.error(f"El nivel bajo y el nivel alto no pueden ser iguales en: {', '.join(error_rango)}")
-        else:
+        if guardar_niv:
             mapeos_niveles = {}
             mapeos_inversos = {}
             unidades_factores = {}
+            df_cod = raw.copy()
+            df_real = raw.copy()
 
-            for f, (v_bajo, v_alto, u_txt) in valores_form.items():
+            for f in factores:
+                v_bajo, v_alto, unidad = inputs_niveles[f]
                 v_medio = (v_bajo + v_alto) / 2.0
+                rango = (v_alto - v_bajo) / 2.0
                 st.session_state.niveles_guardados[f] = {
                     'low': float(v_bajo),
                     'high': float(v_alto),
-                    'unit': u_txt
+                    'unit': unidad.strip()
                 }
                 mapeos_niveles[f] = {v_bajo: -1, v_medio: 0, v_alto: 1}
                 mapeos_inversos[f] = {-1: v_bajo, 0: v_medio, 1: v_alto}
-                unidades_factores[f] = u_txt
+                unidades_factores[f] = unidad.strip()
+
+                serie_cod = pd.to_numeric(raw[f], errors='coerce')
+                df_cod[f] = serie_cod
+                df_real[f] = serie_cod * rango + v_medio if rango != 0 else serie_cod
 
             st.session_state.mapeos_niveles = mapeos_niveles
             st.session_state.mapeos_inversos = mapeos_inversos
             st.session_state.unidades_factores = unidades_factores
-
-            # Generar y congelar df_cod (exclusiva para factorial) y df_real (para CCD y ecuaciones reales)
-            df_cod_nuevo = raw.copy()
-            df_real_nuevo = raw.copy()
-
-            if es_cod:
-                for f in factores:
-                    serie_cod = _to_numeric_clean(raw[f])
-                    df_cod_nuevo[f] = serie_cod
-                    v_b = mapeos_inversos[f][-1]
-                    v_a = mapeos_inversos[f][1]
-                    v_m = (v_b + v_a) / 2.0
-                    rango = (v_a - v_b) / 2.0
-                    df_real_nuevo[f] = serie_cod * rango + v_m if rango != 0 else serie_cod
-            else:
-                for f in factores:
-                    df_cod_nuevo[f] = _codificar_factor(raw[f], mapeos_inversos[f][-1], mapeos_inversos[f][1]).round(6)
-                    df_real_nuevo[f] = _to_numeric_clean(raw[f])
-
-            for r_c in respuestas:
-                df_cod_nuevo[r_c] = _to_numeric_clean(raw[r_c])
-                df_real_nuevo[r_c] = _to_numeric_clean(raw[r_c])
-
-            st.session_state.df_cod = df_cod_nuevo
-            st.session_state.df_real = df_real_nuevo
-            st.session_state.df_work = df_cod_nuevo.copy()
+            st.session_state.df_cod = df_cod.copy()
+            st.session_state.df_real = df_real.copy()
+            st.session_state.df_work = df_cod.copy()
             st.session_state.niveles_confirmados_paso3 = True
             st.rerun()
 
-    # ---------- PASO 3B (DESCONECTADO): MATRIZ CODIFICADA PARA EL ANALISIS ----------
-    st.markdown("---")
-    if not st.session_state.get('niveles_confirmados_paso3') or st.session_state.df_cod is None:
-        _info_box("Paso 3B pendiente",
-                  "Pulsa **💾 Guardar valores y preparar matriz** arriba para guardar tus niveles reales/unidades "
-                  "y habilitar la matriz codificada para el analisis.",
-                  tipo='tip')
-        if st.button("← Regresar a columnas"):
-            st.session_state.stage = 'preview'
-            st.rerun()
-    else:
-        st.success("✅ Valores reales y unidades guardados. Paso 3B listo para el analisis.")
+        if st.session_state.get('niveles_confirmados_paso3') and st.session_state.df_cod is not None:
+            st.success("Niveles guardados correctamente.")
+            df_cod = st.session_state.df_cod
+            df_real = st.session_state.df_real
 
-        mapeos_inv = st.session_state.mapeos_inversos
-        unidades_factores = st.session_state.unidades_factores
+            st.markdown("---")
+            st.markdown("### Paso 3B: Matriz Codificada (-1, 0, +1) para el Analisis")
+            cols_ver = ([st.session_state.corrida_col] if st.session_state.get('corrida_col') else []) + factores + respuestas
+            cols_ver = [c for c in cols_ver if c in df_cod.columns]
+            st.dataframe(df_cod[cols_ver], use_container_width=True)
+
+            st.markdown("---")
+            nav_c = st.columns([1, 3])
+            with nav_c[0]:
+                if st.button("← Regresar a columnas", use_container_width=True):
+                    st.session_state.stage = 'preview'
+                    st.rerun()
+            with nav_c[1]:
+                if st.button("Continuar a puntos centrales y analisis →", type='primary', use_container_width=True):
+                    st.session_state.df_work = df_cod.copy()
+                    st.session_state.centros_confirmados = False
+                    st.session_state.filas_centro_idx = []
+                    st.session_state.stage = 'analysis_select'
+                    st.rerun()
+        else:
+            st.markdown("---")
+            if st.button("← Regresar a columnas", use_container_width=False):
+                st.session_state.stage = 'preview'
+                st.rerun()
+
+    else:
+        _info_box(
+            "Matriz NO codificada detectada",
+            "Tu archivo tiene valores reales. Indica/confirma los valores bajo (-1), alto (+1) y sus unidades para generar la matriz codificada (-1, 0, +1), "
+            "que sera la matriz utilizada para buscar puntos centrales y ejecutar el analisis.",
+            tipo='info'
+        )
+
+        mapeos_niveles = {}
+        mapeos_inversos = {}
+        unidades_factores = {}
+
+        head_c1, head_c2 = st.columns([3, 1])
+        with head_c1:
+            st.markdown("### Configurar niveles reales y unidades")
+        with head_c2:
+            if st.button(
+                "🗑️ Borrar valores (volver al default)",
+                use_container_width=True,
+                help="Restablece los niveles bajos, altos y unidades a sus valores por defecto"
+            ):
+                _limpiar_niveles_y_widgets(factores)
+                st.rerun()
+
+        for f in factores:
+            vals = sorted(pd.to_numeric(raw[f], errors='coerce').dropna().unique().tolist())
+            st.markdown(f"**Factor: {f}**")
+
+            default_low = float(min(vals)) if len(vals) > 0 else 0.0
+            default_high = float(max(vals)) if len(vals) > 0 else 100.0
+            guardado = st.session_state.niveles_guardados.get(
+                f, {'low': default_low, 'high': default_high, 'unit': ''}
+            )
+            c1, c2, c3 = st.columns([2, 2, 1.5])
+            v_bajo = c1.number_input(
+                f"Nivel BAJO (-1) para {f}",
+                value=float(guardado.get('low', default_low)),
+                format="%.4f",
+                key=f"low_{f}"
+            )
+            v_alto = c2.number_input(
+                f"Nivel ALTO (+1) para {f}",
+                value=float(guardado.get('high', default_high)),
+                format="%.4f",
+                key=f"high_{f}"
+            )
+            unidad = c3.text_input(
+                f"Unidad - {f}",
+                value=str(guardado.get('unit', '')),
+                placeholder="ej: ppm, °C, min, %",
+                key=f"unit_{f}"
+            )
+
+            st.session_state.niveles_guardados[f] = {
+                'low': float(v_bajo),
+                'high': float(v_alto),
+                'unit': unidad.strip()
+            }
+            v_medio = (v_bajo + v_alto) / 2.0
+            suf_u = f" {unidad.strip()}" if unidad.strip() else ""
+            st.caption(f"Centro (0) calculado: **{v_medio:.4f}{suf_u}**")
+
+            mapeos_niveles[f] = {v_bajo: -1, v_medio: 0, v_alto: 1}
+            mapeos_inversos[f] = {-1: v_bajo, 0: v_medio, 1: v_alto}
+            unidades_factores[f] = unidad.strip()
+
+        st.session_state.mapeos_niveles = mapeos_niveles
+        st.session_state.mapeos_inversos = mapeos_inversos
+        st.session_state.unidades_factores = unidades_factores
+
+        df_cod = raw.copy()
+        df_real = raw.copy()
+        for f in factores:
+            df_cod[f] = _codificar_factor(raw[f], mapeos_inversos[f][-1], mapeos_inversos[f][1]).round(6)
+            df_real[f] = pd.to_numeric(raw[f], errors='coerce')
+
+        st.markdown("---")
+        st.markdown("### Matriz Codificada (-1, 0, +1) para el Analisis")
+        cols_ver = ([st.session_state.corrida_col] if st.session_state.get('corrida_col') else []) + factores + respuestas
+        cols_ver = [c for c in cols_ver if c in df_cod.columns]
+        st.dataframe(df_cod[cols_ver], use_container_width=True)
+
         resumen_niveles = pd.DataFrame([
             {
                 'Factor': f,
-                'Nivel Bajo (-1)': mapeos_inv[f][-1],
-                'Centro (0)': mapeos_inv[f][0],
-                'Nivel Alto (+1)': mapeos_inv[f][1],
-                'Unidad': unidades_factores.get(f) or '—'
+                'Nivel Bajo (-1)': mapeos_inversos[f][-1],
+                'Centro (0)': mapeos_inversos[f][0],
+                'Nivel Alto (+1)': mapeos_inversos[f][1],
+                'Unidad': unidades_factores[f] if unidades_factores[f] else '—'
             }
             for f in factores
         ])
         with st.expander("📋 Ver resumen de niveles reales y unidades guardadas"):
             st.dataframe(resumen_niveles, use_container_width=True)
 
-        df_cod_listo = st.session_state.df_cod
-        st.markdown("### 3B. Matriz Codificada (-1, 0, +1) seleccionada para el Analisis")
-        st.caption("Si cambias algun valor en el Paso 3A, recuerda pulsar nuevamente **💾 Guardar valores y preparar matriz**.")
-        st.dataframe(df_cod_listo[factores + respuestas], use_container_width=True)
-
         st.markdown("---")
         nav_c = st.columns([1, 3])
         with nav_c[0]:
             if st.button("← Regresar a columnas", use_container_width=True):
+                st.session_state.df_cod = df_cod.copy()
+                st.session_state.df_real = df_real.copy()
                 st.session_state.stage = 'preview'
                 st.rerun()
         with nav_c[1]:
             if st.button("Continuar a puntos centrales y analisis →", type='primary', use_container_width=True):
+                st.session_state.df_cod = df_cod.copy()
+                st.session_state.df_real = df_real.copy()
+                st.session_state.df_work = df_cod.copy()
                 st.session_state.centros_confirmados = False
                 st.session_state.filas_centro_idx = []
                 st.session_state.stage = 'analysis_select'
