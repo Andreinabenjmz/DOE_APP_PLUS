@@ -491,6 +491,12 @@ elif st.session_state.stage == 'encode':
                   "Tu archivo tiene valores reales. Confirma los valores bajo (-1), alto (+1) y sus unidades, y pulsa **💾 Guardar**. "
                   "Despues de guardar, en el Paso 3B se generara la matriz codificada (-1, 0, +1) para el analisis.",
                   tipo='info')
+    with st.expander("📖 ¿Por qué codificamos a -1, 0 y +1? (Escala de factores y escalamiento)"):
+        st.markdown("""
+        - **Misma escala para todos los factores:** En el laboratorio cada variable tiene unidades y magnitudes muy distintas (ej. tiempo en `15–120 min` frente a pH `5.5–7.4`). Llevarlas a `-1` (bajo), `0` (centro) y `+1` (alto) elimina el efecto de escala y permite comparar directamente qué factor pesa más.
+        - **Ortogonalidad:** En escala codificada los factores son independientes entre sí, evitando errores numéricos en la regresión.
+        - **Escalamiento del estudio:** Si en este análisis factorial detectas **curvatura significativa**, el siguiente paso lógico es escalar hacia un diseño **CCD (Superficie de Respuesta)** para encontrar el punto óptimo real antes de validar en laboratorio/planta.
+        """)
 
     head_c1, head_c2 = st.columns([3, 1])
     with head_c1:
@@ -973,6 +979,12 @@ elif st.session_state.stage == 'results':
     _info_box("Que es alpha?",
               f"alpha = {alpha} significa que aceptamos un {alpha*100:.0f}% de probabilidad de equivocarnos al declarar un efecto significativo.",
               tipo='tip')
+    with st.expander("📖 ¿Cómo elige los términos el programa? (Backward, Forward y Jerarquía)"):
+        st.markdown("""
+        - **Backward (recomendado / estilo Minitab):** Empieza con todos los factores principales y sus interacciones dobles, y elimina uno por uno los menos significativos (`p > alpha`).
+        - **Forward:** Empieza solo con los factores principales y agrega únicamente las interacciones con `p < alpha`.
+        - **Principio de Jerarquía:** Si una interacción (ej. `A*C`) resulta significativa, el programa conserva automáticamente `A` y `C` en el modelo aunque alguno por separado tuviera `p > alpha`.
+        """)
 
     R = None
     try:
@@ -1037,6 +1049,13 @@ elif st.session_state.stage == 'results':
         _info_box("Que significa R2?",
                   f"R2 = {R['R2']*100:.2f}% indica que el modelo explica el {R['R2']*100:.2f}% de la variacion en la respuesta.",
                   tipo='tip')
+        with st.expander("📖 ¿Cómo saber si el modelo es bueno? (S, R², R² ajustado y R² predicho)"):
+            st.markdown("""
+            - **S (Error estándar):** Desviación promedio entre los datos reales y lo que predice la ecuación (en las mismas unidades de `Y`). Mientras **más pequeño**, mejor.
+            - **R²:** Porcentaje de la variación de `Y` explicada por el modelo. Siempre sube al agregar términos, incluso si no sirven.
+            - **R² ajustado:** Corrige el `R²` penalizando términos innecesarios. Si agregas ruido, baja.
+            - **R² predicho:** Mide qué tan bien predice el modelo **experimentos nuevos** (validación cruzada PRESS). Si `R²` y `R² predicho` están separados por más de **20%**, el modelo está sobreajustado.
+            """)
 
         # ANOVA
         st.markdown("---")
@@ -1054,6 +1073,17 @@ elif st.session_state.stage == 'results':
                 anova[col] = anova[col].apply(lambda x: f"{x:.5f}" if pd.notna(x) else "-")
 
         st.dataframe(anova, use_container_width=True)
+
+        with st.expander("📖 Guía para leer el ANOVA: Valor p, Curvatura y Lack of Fit (Falta de Ajuste)"):
+            st.markdown("""
+            - **Valor p (`< alpha`):** Si `p < 0.05` (o tu `alpha`), el factor o interacción tiene un efecto estadísticamente real sobre `Y`.
+            - **Curvatura (`Ct Pt`):** Compara las esquinas frente a los puntos centrales. Si `p < 0.05`, la respuesta no es plana (existe curvatura) y conviene continuar con un diseño **CCD**.
+            - **Lack of Fit (Falta de Ajuste) vs. Pure Error (Error Puro):**
+              - **Pure Error:** Es la variación natural que ocurre al repetir exactamente la misma corrida en el laboratorio (por ejemplo, los puntos centrales).
+              - **Lack of Fit:** Mide cuánto se desvía tu ecuación de los promedios reales.
+              - ✅ **Si `p > 0.05` (No significativo):** ¡Excelente! Tu modelo ajusta bien los datos; los errores restantes son solo variabilidad normal del experimento.
+              - ⚠️ **Si `p < 0.05` (Significativo):** El modelo no logra capturar toda la tendencia real (puede faltar una interacción o términos cuadráticos `A²`).
+            """)
 
         # COEFICIENTES
         st.markdown("---")
@@ -1091,11 +1121,82 @@ elif st.session_state.stage == 'results':
         except Exception as e:
             st.warning(f"No se pudo generar ranking: {e}")
 
+        # RANKING DE MEJORES CONDICIONES OBSERVADAS (TOP N)
+        with st.expander("🏆 Ranking de Condiciones Observadas (Real vs. Ecuación)", expanded=False):
+            st.markdown(
+                "Compara las combinaciones experimentales que dieron mejores resultados reales frente a lo que predice tu ecuación. "
+                "*(Si hay réplicas o centros repetidos, se muestra su promedio).*"
+            )
+            rk_c1, rk_c2 = st.columns([2, 1])
+            rk_obj = rk_c1.radio(
+                "Ordenar por:",
+                ["Mayor respuesta (Maximizar Y)", "Menor respuesta (Minimizar Y)"],
+                horizontal=True,
+                key="rk_cond_obj"
+            )
+            rk_top = rk_c2.number_input("Mostrar top:", min_value=3, max_value=max(5, len(df)), value=5, step=1, key="rk_cond_top")
+
+            try:
+                cond_medias = df.groupby(factores, as_index=False).agg(
+                    Y=('Y', 'mean'),
+                    Replicas=('Y', 'count')
+                )
+                asc = rk_obj.startswith("Menor")
+                cond_medias = cond_medias.sort_values('Y', ascending=asc).head(int(rk_top)).reset_index(drop=True)
+
+                corr_col = st.session_state.get('corrida_col')
+                ranking_data = []
+                for idx, row in cond_medias.iterrows():
+                    # Localizar numero(s) de corrida correspondientes en raw_cod
+                    mask = pd.Series(True, index=raw_cod.index)
+                    for f in factores:
+                        mask &= np.isclose(_to_numeric_clean(raw_cod[f]), float(row[f]), atol=1e-4)
+                    if corr_col and corr_col in raw_cod.columns:
+                        corr_vals = [str(v) for v in raw_cod.loc[mask, corr_col].tolist()]
+                    else:
+                        corr_vals = [str(i + 1) for i in raw_cod.index[mask].tolist()]
+
+                    fila = {
+                        'Posición': idx + 1,
+                        'Corrida(s)': ', '.join(corr_vals) if corr_vals else '-',
+                        'Réplicas': int(row['Replicas'])
+                    }
+
+                    niveles_cod = {}
+                    for f in factores:
+                        val = float(row[f])
+                        niveles_cod[f] = val
+                        u_f = unidades.get(f, '').strip()
+                        suf_u = f" {u_f}" if u_f else ""
+                        m_inv = st.session_state.mapeos_inversos.get(f, {})
+
+                        if np.isclose(val, -1.0, atol=1e-3):
+                            fila[f] = f"{m_inv[-1]:g}{suf_u} (-1)" if -1 in m_inv else "Bajo (-1)"
+                        elif np.isclose(val, 1.0, atol=1e-3):
+                            fila[f] = f"{m_inv[1]:g}{suf_u} (+1)" if 1 in m_inv else "Alto (+1)"
+                        elif abs(val) < 1e-3:
+                            fila[f] = f"{m_inv[0]:g}{suf_u} (0)" if 0 in m_inv else "Centro (0)"
+                        else:
+                            fila[f] = f"{val:+.3f} (cod)"
+
+                    y_real = float(row['Y'])
+                    y_pred_row = float(ce.predecir_y_combinacion(niveles_cod, R))
+                    diff = y_real - y_pred_row
+                    fila['Media Real (Y)'] = round(y_real, 4)
+                    fila['Predicción (Ecuación)'] = round(y_pred_row, 4)
+                    fila['Diferencia (Residuo)'] = round(diff, 4)
+                    ranking_data.append(fila)
+
+                st.dataframe(pd.DataFrame(ranking_data), use_container_width=True)
+                st.caption("💡 **Diferencia (Residuo) pequeña** indica que la ecuación predice esa condición experimental con alta precisión.")
+            except Exception as e:
+                st.warning(f"No se pudo construir el ranking de condiciones: {e}")
+
         # GRAFICOS
         st.markdown("---")
         st.markdown("## Graficos Diagnostico")
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Pareto", "Semi-normal", "Efectos Principales", "Interacciones", "Superficie 3D y Contorno"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["Pareto", "Semi-normal", "Efectos Principales", "Interacciones", "Superficie 3D y Contorno", "Residuales"])
 
         with tab1:
             try:
@@ -1203,6 +1304,21 @@ elif st.session_state.stage == 'results':
                         )
                 except Exception as e:
                     st.warning(f"No se pudo generar la superficie 3D: {e}")
+
+        with tab6:
+            try:
+                fn_res = ce._gen_residuales(df, R)
+                st.image(fn_res, use_container_width=True)
+                _info_box(
+                    "¿Para qué sirven los gráficos de residuales?",
+                    "Validan que tu modelo cumpla los supuestos del ANOVA: "
+                    "<b>(a) Normalidad:</b> los puntos deben seguir la línea roja; "
+                    "<b>(b) Varianza constante:</b> nube aleatoria sin forma de embudo ni curva; "
+                    "<b>(c) Independencia (orden):</b> sin tendencias crecientes/decrecientes a lo largo de las corridas (confirma que la aleatorización funcionó).",
+                    tipo='tip'
+                )
+            except Exception as e:
+                st.warning(f"No se pudieron generar residuales: {e}")
                     
 
         # PREDICCION
@@ -1393,6 +1509,13 @@ elif st.session_state.stage == 'ccd_refine':
                 )
             else:
                 st.caption("Sin replicas: no se puede calcular la falta de ajuste.")
+
+            with st.expander("📖 ¿Qué significa la Falta de Ajuste (Lack of Fit) en CCD?"):
+                st.markdown("""
+                - Compara el error del modelo cuadrático frente al **error puro** de las réplicas (normalmente tus puntos centrales).
+                - ✅ **`p > 0.05` (no significativa):** El modelo cuadrático describe bien la superficie real; las desviaciones son solo variabilidad natural del experimento.
+                - ⚠️ **`p < 0.05` (significativa):** La superficie real tiene un comportamiento que el modelo reducido actual no alcanza a explicar del todo (prueba subir `alfa` o usar el modelo completo).
+                """)
 
             st.markdown("**Ecuacion (unidades codificadas):**")
             st.code(R['eq_coded'], language=None)
