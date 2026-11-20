@@ -4,6 +4,7 @@
 
 import importlib
 import os
+import re
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -177,8 +178,25 @@ def _detectar_centros(df_cod, cols):
     return len(indices), indices
 
 
+def _es_grupo_replicas(resp_cols):
+    """True si las columnas seleccionadas son replicas o bloques de una misma respuesta (no respuestas distintas como Tamano y Zeta)."""
+    if not isinstance(resp_cols, (list, tuple)) or len(resp_cols) < 2:
+        return False
+    nombres = [str(c).strip().lower() for c in resp_cols]
+    patron_rep = re.compile(
+        r'\b(rep\d*|reps|replicas?|réplicas?|blocks?|bloques?|ensayos?|muestras?|duplicados?|triplicados?)\b'
+    )
+    if any(patron_rep.search(n.replace('_', ' ')) for n in nombres):
+        return True
+    bases = [re.sub(r'[\s_\-#]*\d+$', '', n).strip() for n in nombres]
+    tienen_numero = all(re.search(r'\d+$', n) is not None for n in nombres)
+    if tienen_numero and len(set(bases)) == 1 and bases[0] != '':
+        return True
+    return False
+
+
 def _detectar_replicas(df_cod, cols, resp_cols):
-    """Cuenta replicas por filas duplicadas o por multiples columnas de respuesta/bloque."""
+    """Cuenta replicas por filas duplicadas o por multiples columnas que realmente sean replicas/bloques."""
     if resp_cols is None:
         return 0
     if isinstance(resp_cols, (list, tuple)):
@@ -189,12 +207,13 @@ def _detectar_replicas(df_cod, cols, resp_cols):
     if not valid_cols:
         return 0
 
-    if len(valid_cols) >= 2:
+    es_ccd = hasattr(ce_rsm, 'es_diseno_ccd') and ce_rsm.es_diseno_ccd(df_cod, cols)
+    if len(valid_cols) >= 2 and not es_ccd and _es_grupo_replicas(valid_cols):
         return len(valid_cols)
 
     df_esq = df_cod.copy()
     for c in cols:
-        df_esq[c] = pd.to_numeric(df_esq[c], errors='coerce')
+        df_esq[c] = _to_numeric_clean(df_esq[c])
     if st.session_state.get('filas_centro_idx'):
         df_esq = df_esq.drop(st.session_state.filas_centro_idx, errors='ignore')
     else:
@@ -206,13 +225,13 @@ def _detectar_replicas(df_cod, cols, resp_cols):
     return int((df_group > 1).sum())
 
 
-def _validar_analisis_vs_diseno(df_cod, factores, resp_cols, analisis):
+def _validar_analisis_vs_diseno(df_cod, factores, respuesta, analisis):
     k = len(factores)
     if st.session_state.get('filas_centro_idx'):
         centros = len(st.session_state.filas_centro_idx)
     else:
         centros = _detectar_centros(df_cod, factores)[0]
-    replicas = _detectar_replicas(df_cod, factores, resp_cols)
+    replicas = _detectar_replicas(df_cod, factores, respuesta)
     msgs = []
 
     if analisis == 'factorial_via1':
@@ -246,14 +265,15 @@ def _sugerir_analisis(df_cod, factores, resp_cols, n_respuestas=1):
         centros = _detectar_centros(df_cod, factores)[0]
     esquinas = n - centros
     replicas = _detectar_replicas(df_cod, factores, resp_cols)
+    es_grupo_rep = _es_grupo_replicas(resp_cols)
 
     if hasattr(ce_rsm, 'es_diseno_ccd') and ce_rsm.es_diseno_ccd(df_cod, factores):
-        return 'ccd', f"Detectado diseno CCD ({n} corridas con puntos axiales y {centros} centros). Sugerencia: Superficie de Respuesta (CCD)."
+        return 'ccd', f"Detectado diseno CCD ({n} corridas con puntos axiales y {centros} centro(s)). Sugerencia: Superficie de Respuesta (CCD)."
     if centros > 0:
-        extra = f" × {n_respuestas} bloques/columnas" if n_respuestas >= 2 else ""
+        extra = f" × {n_respuestas} bloques/replicas" if (n_respuestas >= 2 and es_grupo_rep) else ""
         return 'factorial_via2', f"Detectado: {esquinas} esquinas + {centros} centro(s){extra}. Sugerencia: Via 2."
-    elif replicas > 0 or n_respuestas >= 2:
-        return 'factorial_via1', f"Detectado: {esquinas} esquinas con replicas ({max(replicas, n_respuestas)}). Sugerencia: Via 1."
+    elif replicas > 0 or (n_respuestas >= 2 and es_grupo_rep):
+        return 'factorial_via1', f"Detectado: {esquinas} esquinas con replicas ({max(replicas, n_respuestas if es_grupo_rep else 0)}). Sugerencia: Via 1."
     else:
         return 'factorial_via3', f"Detectado: {esquinas} esquinas sin replicas ni centros. Sugerencia: Via 3."
 
@@ -885,6 +905,8 @@ elif st.session_state.stage == 'analysis_select':
     elif n_centros_detect > 0:
         st.session_state.filas_centro_idx = idx_centros
 
+    es_ccd_detect = hasattr(ce_rsm, 'es_diseno_ccd') and ce_rsm.es_diseno_ccd(df_cod, factores)
+    es_grupo_rep = (not es_ccd_detect) and _es_grupo_replicas(respuestas)
     replicas = _detectar_replicas(df_cod, factores, respuestas)
     esq = len(df_cod) - n_centros_detect
 
@@ -893,13 +915,21 @@ elif st.session_state.stage == 'analysis_select':
     with col1:
         st.metric("Factores", k)
     with col2:
-        st.metric("Esquinas", esq)
+        if es_ccd_detect:
+            st.metric("Esquinas + axiales", esq, delta="(puntos no centrales)")
+        else:
+            st.metric("Esquinas", esq)
     with col3:
         st.metric("Puntos centrales", n_centros_detect, delta="(filas con todos ~ 0)")
+    delta_rep = (
+        f"({len(respuestas)} columnas de replica)"
+        if (es_grupo_rep and replicas == len(respuestas))
+        else "(filas identicas en factores)"
+    )
     with col4:
-        delta_rep = f"({len(respuestas)} columnas de replica)" if len(respuestas) >= 2 else "(filas identicas en factores)"
         st.metric("Replicas puras", replicas, delta=delta_rep)
-
+    
+    
     # Confirmacion de puntos centrales
     if n_centros_detect > 0:
         filas_str = ', '.join(str(i + 1) for i in idx_centros)
