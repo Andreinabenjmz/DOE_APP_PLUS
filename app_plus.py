@@ -1752,155 +1752,174 @@ elif st.session_state.stage == 'results':
             st.session_state.stage = 'upload'
             st.rerun()
 
-
 # ==================== RAMA CCD (LIMITADA EXCLUSIVAMENTE A VIA CCD) ====================
-elif st.session_state.stage == 'ccd_full':
-    st.title("Superficie de Respuesta (CCD) - Modelo completo")
+elif st.session_state.stage in ('ccd_full', 'ccd_refine', 'ccd_diag'):
+    st.title("5. Superficie de Respuesta (CCD) - Refinamiento, Graficos y Optimizacion")
+
     rawc = st.session_state.df_ccd_raw
     facc = st.session_state.factores_ccd
     respc = st.session_state.respuesta_ccd
-
-    _info_box("Ruta CCD (Superficie de Respuesta)",
-              f"Diseno CCD con **{len(rawc)} corridas** | Factores: **{', '.join(facc)}** | Respuesta(s): **{', '.join(respc)}**. "
-              "Se ajustara un modelo cuadratico completo (lineales + cuadrados A² + interacciones 2 a 2).",
-              tipo='info')
-
-    st.dataframe(rawc[facc + respc], use_container_width=True)
-
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        if st.button("← Cambiar tipo de analisis", use_container_width=True):
-            st.session_state.stage = 'analysis_select'
-            st.rerun()
-    with c2:
-        if st.button("Ajustar modelos completos →", type='primary', use_container_width=True):
-            try:
-                Rs = {}
-                for r in respc:
-                    Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False)
-                st.session_state.R_ccd_full = Rs
-                st.session_state.R_ccd = None
-                st.session_state.stage = 'ccd_refine'
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error al ajustar CCD: {e}")
-
-
-elif st.session_state.stage == 'ccd_refine':
-    st.title("CCD - Refinar modelo (eliminacion hacia atras)")
-    rawc = st.session_state.df_ccd_raw
-    facc = st.session_state.factores_ccd
-    respc = st.session_state.respuesta_ccd
-    unidades_ccd = st.session_state.get('unidades_factores', {})
-
-    _info_box("Eliminacion hacia atras (Backward)",
-              "Puedes aplicar eliminacion automatica (respetando jerarquia: no quita un principal si participa en una interaccion activa) "
-              "o trabajar con el modelo cuadratico completo.",
-              tipo='tip')
-
-    alfa = st.number_input("Alfa para eliminacion (p > alfa se elimina)", 0.01, 0.20, 0.05, 0.01, key="ccd_alfa")
-    st.session_state['ccd_alfa_val'] = float(alfa)
-
-    b1, b2 = st.columns(2)
-    with b1:
-        if st.button("Aplicar eliminacion hacia atras", type='primary', use_container_width=True):
-            with st.spinner("Ajustando..."):
-                Rs = {}
-                for r in respc:
-                    Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, alpha_elim=alfa, eliminar=True)
-                st.session_state.R_ccd = Rs
-    with b2:
-        if st.button("Usar modelo completo (sin eliminar)", use_container_width=True):
-            if st.session_state.R_ccd_full:
-                st.session_state.R_ccd = st.session_state.R_ccd_full
-            else:
-                Rs = {}
-                for r in respc:
-                    Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False)
-                st.session_state.R_ccd = Rs
-
-    Rs = st.session_state.get('R_ccd') or st.session_state.get('R_ccd_full')
-    if Rs:
-        st.session_state.R_ccd = Rs
-        for r, R in Rs.items():
-            st.markdown("---")
-            st.markdown(f"### Respuesta: {r}")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("S (Error estandar)", f"{np.sqrt(R['model'].mse_resid):.6f}")
-            c2.metric("R2", f"{R['R2']*100:.2f}%")
-            c3.metric("R2 ajustado", f"{R['R2_adj']*100:.2f}%")
-            c4.metric("Terminos", len(R['terms']))
-
-            st.markdown("#### Tabla ANOVA")
-            _info_box("Analisis de Varianza",
-                      "Descompone la variacion del modelo cuadratico. p < alpha = termino significativo.",
-                      tipo='info')
-            anova_ccd = ce_rsm.limpiar_anova_ccd(R['anova']) if hasattr(ce_rsm, 'limpiar_anova_ccd') else R['anova'].copy()
-            st.dataframe(anova_ccd.round(5), use_container_width=True)
-
-            if R['lof']:
-                ok_lof = R['lof']['p'] > 0.05
-                st.write(
-                    f"**Falta de ajuste:** F = {R['lof']['F']:.3f}, p = {R['lof']['p']:.4f} "
-                    + ("-> no significativa (buena)" if ok_lof else "-> SIGNIFICATIVA (revisar modelo)")
-                )
-            else:
-                st.caption("Sin replicas: no se puede calcular la falta de ajuste.")
-
-            with st.expander("📖 ¿Qué significa la Falta de Ajuste (Lack of Fit) en CCD?"):
-                st.markdown("""
-                - Compara el error del modelo cuadrático frente al **error puro** de las réplicas (normalmente tus puntos centrales).
-                - ✅ **`p > 0.05` (no significativa):** El modelo cuadrático describe bien la superficie real; las desviaciones son solo variabilidad natural del experimento.
-                - ⚠️ **`p < 0.05` (significativa):** La superficie real tiene un comportamiento que el modelo reducido actual no alcanza a explicar del todo (prueba subir `alfa` o usar el modelo completo).
-                """)
-
-            st.markdown("#### Coeficientes del Modelo")
-            _info_box("Coeficientes en unidades codificadas",
-                      "Muestra el coeficiente estimado, su error estandar (SE), estadistico t y valor p de cada termino.",
-                      tipo='info')
-            if hasattr(ce_rsm, 'generar_tabla_coeficientes_ccd'):
-                coef_ccd = ce_rsm.generar_tabla_coeficientes_ccd(R)
-                st.dataframe(coef_ccd.round(5), use_container_width=True)
-
-            st.markdown("#### Ecuacion de Regresion")
-            st.markdown("**Ecuacion (unidades codificadas):**")
-            st.code(R['eq_coded'], language=None)
-            st.markdown("**Ecuacion (unidades reales):**")
-            st.code(R['eq_uncoded'], language=None)
-            if any(unidades_ccd.get(f) for f in facc):
-                u_txt = " | ".join(f"{f}: {unidades_ccd[f]}" for f in facc if unidades_ccd.get(f))
-                st.caption(f"Unidades guardadas -> {u_txt}")
-
-        st.markdown("---")
-        c1, c2 = st.columns(2)
-        if c1.button("← Volver a modelo completo", use_container_width=True):
-            st.session_state.stage = 'ccd_full'
-            st.rerun()
-        if c2.button("Ir a Diagnosticos, 3D, contornos y optimizacion →", type='primary', use_container_width=True):
-            st.session_state.stage = 'ccd_diag'
-            st.rerun()
-
-
-elif st.session_state.stage == 'ccd_diag':
-    st.title("CCD - Diagnosticos, Superficie 3D, contornos y optimizacion")
-    Rs = st.session_state.get('R_ccd')
-    if not Rs:
-        st.error("Primero debes refinar el modelo (paso anterior).")
-        st.stop()
-
-    respc = list(Rs.keys())
-    facc = Rs[respc[0]]['factores']
     unidades_ccd = st.session_state.get('unidades_factores', {})
     etiq_ccd = {f: f"{f} ({unidades_ccd[f]})" if unidades_ccd.get(f) else f for f in facc}
+    letras_ccd = [chr(65 + i) if i < 26 else f"X{i + 1}" for i in range(len(facc))]
+    leyenda_ccd = " | ".join(f"**{L}** = {f}" for L, f in zip(letras_ccd, facc))
 
-    alpha_ccd = float(st.session_state.get('ccd_alfa_val', 0.05))
+    if rawc is None or not facc or not respc:
+        st.error("No hay datos CCD cargados. Regresa al paso anterior.")
+        if st.button("← Volver a seleccion de analisis"):
+            st.session_state.stage = 'analysis_select'
+            st.rerun()
+        st.stop()
+
+    with st.expander(f"📋 Ver matriz CCD de trabajo ({len(rawc)} corridas | Factores: {', '.join(facc)})", expanded=False):
+        st.dataframe(rawc[facc + respc], use_container_width=True)
+
+    # ------------------------------------------------------------
+    # 1. CONFIGURACION DEL MODELO (POR DEFECTO: BACKWARD)
+    # ------------------------------------------------------------
+    st.markdown("---")
+    st.markdown("### Configuracion del Modelo CCD")
+
+    modos_ccd = ["Automatico (Backward)", "Modelo completo (cuadratico)", "Manual"]
+    c_m1, c_m2 = st.columns(2)
+    with c_m1:
+        modo_ccd_sel = st.radio(
+            "Seleccion de terminos:",
+            modos_ccd,
+            index=0,
+            key="ccd_modo_sel"
+        )
+    with c_m2:
+        alfa = st.number_input(
+            "Nivel de significancia (alpha):",
+            min_value=0.01,
+            max_value=0.50,
+            value=float(st.session_state.get('ccd_alfa_val', 0.05)),
+            step=0.01,
+            format="%.2f",
+            key="ccd_alfa"
+        )
+        st.session_state['ccd_alfa_val'] = float(alfa)
+
+    _info_box(
+        "Eliminacion hacia atras (Backward)",
+        "Por defecto el programa ya viene configurado en **Backward Elimination** (respetando jerarquia) y muestra el modelo reducido. "
+        "Puedes cambiar a **Modelo completo** o **Manual** en cualquier momento.",
+        tipo='tip'
+    )
+
+    terms_manual_sel = {}
+    if modo_ccd_sel == "Manual":
+        all_ccd_terms = ce_rsm.terminos_completos(facc)
+        Rs_prev = st.session_state.get('R_ccd') or {}
+        for r in respc:
+            defaults_r = set(Rs_prev[r]['terms']) if r in Rs_prev else set(all_ccd_terms)
+            st.markdown(f"**Terminos para `{r}`:**")
+            cols_t = st.columns(3)
+            sel_r = []
+            for idx_t, t in enumerate(all_ccd_terms):
+                if cols_t[idx_t % 3].checkbox(t, value=(t in defaults_r), key=f"ccd_man_{r}_{t}"):
+                    sel_r.append(t)
+            if not sel_r:
+                st.warning(f"Selecciona al menos un termino para {r}.")
+                st.stop()
+            terms_manual_sel[r] = sel_r
+
+    cfg_sig = (
+        modo_ccd_sel,
+        float(alfa),
+        tuple((r, tuple(terms_manual_sel[r])) for r in respc) if modo_ccd_sel == "Manual" else None,
+        tuple(facc),
+        tuple(respc),
+        len(rawc)
+    )
+
+    if st.session_state.get('ccd_cfg_sig') != cfg_sig or not st.session_state.get('R_ccd'):
+        try:
+            Rs_calc = {}
+            for r in respc:
+                if modo_ccd_sel == "Automatico (Backward)":
+                    Rs_calc[r] = ce_rsm.ajustar_ccd(rawc, facc, r, alpha_elim=alfa, eliminar=True)
+                elif modo_ccd_sel == "Modelo completo (cuadratico)":
+                    Rs_calc[r] = ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False)
+                else:
+                    Rs_calc[r] = ce_rsm.ajustar_ccd(rawc, facc, r, terms=terms_manual_sel[r])
+            st.session_state.R_ccd = Rs_calc
+            st.session_state.ccd_cfg_sig = cfg_sig
+        except Exception as e:
+            st.error(f"Error al ajustar CCD: {e}")
+            st.stop()
+
+    Rs = st.session_state.R_ccd
     fijos_diag = {
         f: float(st.session_state.get(f"fijo_{f}", Rs[respc[0]]['coding'][f]['c']))
         for f in facc
     }
 
+    # ------------------------------------------------------------
+    # 2. RESULTADOS POR RESPUESTA (ANOVA, COEFICIENTES, ECUACION Y GRAFICOS)
+    # ------------------------------------------------------------
     for r, R in Rs.items():
-        st.markdown(f"### Diagnosticos de Efectos y Residuales - {r}")
+        st.markdown("---")
+        st.markdown(f"## Respuesta: {r}")
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("S (Error estandar)", f"{np.sqrt(R['model'].mse_resid):.6f}")
+        c2.metric("R2", f"{R['R2']*100:.2f}%")
+        c3.metric("R2 ajustado", f"{R['R2_adj']*100:.2f}%")
+        c4.metric("Terminos en modelo", len(R['terms']))
+
+        # --- ANOVA ---
+        st.markdown("### Tabla ANOVA")
+        _info_box("Analisis de Varianza",
+                  "Descompone la variacion del modelo cuadratico. p < alpha = termino significativo.",
+                  tipo='info')
+        anova_ccd = ce_rsm.limpiar_anova_ccd(R['anova']) if hasattr(ce_rsm, 'limpiar_anova_ccd') else R['anova'].copy()
+        st.dataframe(anova_ccd.round(5), use_container_width=True)
+
+        if R['lof']:
+            ok_lof = R['lof']['p'] > 0.05
+            st.write(
+                f"**Falta de ajuste:** F = {R['lof']['F']:.3f}, p = {R['lof']['p']:.4f} "
+                + ("-> no significativa (buena)" if ok_lof else "-> SIGNIFICATIVA (revisar modelo)")
+            )
+        else:
+            st.caption("Sin replicas: no se puede calcular la falta de ajuste.")
+
+        with st.expander("📖 ¿Qué significa la Falta de Ajuste (Lack of Fit) en CCD?"):
+            st.markdown("""
+            - Compara el error del modelo cuadrático frente al **error puro** de las réplicas (normalmente tus puntos centrales).
+            - ✅ **`p > 0.05` (no significativa):** El modelo cuadrático describe bien la superficie real; las desviaciones son solo variabilidad natural del experimento.
+            - ⚠️ **`p < 0.05` (significativa):** La superficie real tiene un comportamiento que el modelo reducido actual no alcanza a explicar del todo (prueba subir `alfa` o usar el modelo completo).
+            """)
+
+        # --- COEFICIENTES ---
+        st.markdown("### Coeficientes del Modelo")
+        _info_box("Coeficientes en unidades codificadas",
+                  "Coeficiente estimado, error estandar (SE), estadistico t y valor p de cada termino en el modelo.",
+                  tipo='info')
+        if hasattr(ce_rsm, 'generar_tabla_coeficientes_ccd'):
+            coef_ccd = ce_rsm.generar_tabla_coeficientes_ccd(R)
+            st.dataframe(coef_ccd.round(5), use_container_width=True)
+
+        # --- ECUACIONES (SIN SUPERINDICE CUADRADO) ---
+        st.markdown("### Ecuacion de Regresion")
+        st.caption(f"Leyenda de factores: {leyenda_ccd}")
+        if R.get('eq_uncoded_letras'):
+            st.markdown("**En unidades reales (formato compacto A, B, C):**")
+            st.code(R['eq_uncoded_letras'], language=None)
+        st.markdown("**En unidades reales (con nombres completos):**")
+        st.code(R['eq_uncoded'], language=None)
+        with st.expander("Ver ecuacion en unidades codificadas (-1 a +1)"):
+            if R.get('eq_coded_letras'):
+                st.code(R['eq_coded_letras'], language=None)
+            st.code(R['eq_coded'], language=None)
+        if any(unidades_ccd.get(f) for f in facc):
+            u_txt = " | ".join(f"{f}: {unidades_ccd[f]}" for f in facc if unidades_ccd.get(f))
+            st.caption(f"Unidades guardadas -> {u_txt}")
+
+        # --- GRAFICOS DEBAJO DEL REFINAMIENTO ---
+        st.markdown(f"### Graficos Diagnostico - {r}")
         t_par, t_dan, t_int, t_res = st.tabs([
             "Pareto", "Semi-normal (Daniel)", "Interacciones", "Residuales"
         ])
@@ -1912,12 +1931,12 @@ elif st.session_state.stage == 'ccd_diag':
                     value=False,
                     key=f"ccd_par_full_{r}"
                 )
-                fn_par = ce_rsm.graf_pareto_ccd(R, usar_completo=usar_full_par, alpha=alpha_ccd)
+                fn_par = ce_rsm.graf_pareto_ccd(R, usar_completo=usar_full_par, alpha=float(alfa))
                 if fn_par:
                     st.image(fn_par, use_container_width=True)
                 _info_box(
                     "Diagrama de Pareto CCD",
-                    "Muestra la magnitud estandarizada |t| de cada termino lineal, cuadratico (A²) e interaccion. "
+                    "Magnitud estandarizada |t| de cada termino lineal, cuadratico (A*A) e interaccion. "
                     "Las barras rojas superan el valor critico.",
                     tipo='tip'
                 )
@@ -1979,11 +1998,14 @@ elif st.session_state.stage == 'ccd_diag':
                 )
 
         with t_res:
-            fn = ce_rsm.graf_residuales_ccd(R)
-            st.image(fn, use_container_width=True)
+            fn_res = ce_rsm.graf_residuales_ccd(R)
+            st.image(fn_res, use_container_width=True)
 
+    # ------------------------------------------------------------
+    # 3. SUPERFICIES 3D, CONTORNOS Y OPTIMIZACION (DEBAJO)
+    # ------------------------------------------------------------
     st.markdown("---")
-    st.markdown("### Superficies 3D, Contornos individuales y combinado")
+    st.markdown("## Superficies 3D, Contornos individuales y combinado")
     st.caption("1) Define los ejes de cada grafico y los del combinado. "
                "2) Pulsa **Aplicar configuracion**. 3) Activa las casillas para mostrar los graficos.")
 
@@ -2019,7 +2041,7 @@ elif st.session_state.stage == 'ccd_diag':
                 fijos[f] = st.number_input(etiq_ccd[f], value=float(codf['c']),
                                            step=paso, format="%.6g", key=f"fijo_{f}")
         for f in facc:
-            usado = any(f in t.split('*') for R in Rs.values() for t in R['terms'])
+            usado = any(f in t.split('*') for R_item in Rs.values() for t in R_item['terms'])
             if usado:
                 st.info(f"'{etiq_ccd[f]}' esta en el modelo reducido: si algun grafico lo fija, ese valor SI afecta ese grafico.")
             else:
@@ -2102,7 +2124,6 @@ elif st.session_state.stage == 'ccd_diag':
     st.markdown("---")
     st.markdown("### Contorno combinado (region de interes)")
     st.caption("Define los rangos aceptables de cada respuesta y pulsa **Aplicar metas**.")
-    rawc = st.session_state.df_ccd_raw
     with st.form("ccd_form_metas"):
         rangos = {}
         cc1, cc2 = st.columns(2)
@@ -2189,27 +2210,26 @@ elif st.session_state.stage == 'ccd_diag':
 
     # ---- Navegacion final CCD ----
     st.markdown("---")
-    nav_ccd = st.columns(4)
+    nav_ccd = st.columns(3)
     with nav_ccd[0]:
-        if st.button("← Volver a Refinar CCD", use_container_width=True):
-            st.session_state.stage = 'ccd_refine'
-            st.rerun()
-    with nav_ccd[1]:
         if st.button("📋 Cambiar analisis", use_container_width=True):
             st.session_state.R_ccd = None
             st.session_state.R_ccd_full = None
+            st.session_state.ccd_cfg_sig = None
             st.session_state.stage = 'analysis_select'
             st.rerun()
-    with nav_ccd[2]:
+    with nav_ccd[1]:
         if st.button("🔢 Revisar niveles y matriz", use_container_width=True):
             st.session_state.R_ccd = None
             st.session_state.R_ccd_full = None
+            st.session_state.ccd_cfg_sig = None
             st.session_state.stage = 'encode'
             st.rerun()
-    with nav_ccd[3]:
+    with nav_ccd[2]:
         if st.button("📁 Nuevo archivo", use_container_width=True):
             st.session_state.R_ccd = None
             st.session_state.R_ccd_full = None
+            st.session_state.ccd_cfg_sig = None
             st.session_state.raw = None
             st.session_state.df_work = None
             st.session_state.df_cod = None
