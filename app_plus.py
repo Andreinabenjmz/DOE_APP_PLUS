@@ -1799,6 +1799,7 @@ elif st.session_state.stage == 'ccd_refine':
               tipo='tip')
 
     alfa = st.number_input("Alfa para eliminacion (p > alfa se elimina)", 0.01, 0.20, 0.05, 0.01, key="ccd_alfa")
+    st.session_state['ccd_alfa_val'] = float(alfa)
 
     b1, b2 = st.columns(2)
     with b1:
@@ -1830,7 +1831,12 @@ elif st.session_state.stage == 'ccd_refine':
             c3.metric("R2 ajustado", f"{R['R2_adj']*100:.2f}%")
             c4.metric("Terminos", len(R['terms']))
 
-            st.dataframe(R['anova'].round(4), use_container_width=True)
+            st.markdown("#### Tabla ANOVA")
+            _info_box("Analisis de Varianza",
+                      "Descompone la variacion del modelo cuadratico. p < alpha = termino significativo.",
+                      tipo='info')
+            anova_ccd = ce_rsm.limpiar_anova_ccd(R['anova']) if hasattr(ce_rsm, 'limpiar_anova_ccd') else R['anova'].copy()
+            st.dataframe(anova_ccd.round(5), use_container_width=True)
 
             if R['lof']:
                 ok_lof = R['lof']['p'] > 0.05
@@ -1848,6 +1854,15 @@ elif st.session_state.stage == 'ccd_refine':
                 - ⚠️ **`p < 0.05` (significativa):** La superficie real tiene un comportamiento que el modelo reducido actual no alcanza a explicar del todo (prueba subir `alfa` o usar el modelo completo).
                 """)
 
+            st.markdown("#### Coeficientes del Modelo")
+            _info_box("Coeficientes en unidades codificadas",
+                      "Muestra el coeficiente estimado, su error estandar (SE), estadistico t y valor p de cada termino.",
+                      tipo='info')
+            if hasattr(ce_rsm, 'generar_tabla_coeficientes_ccd'):
+                coef_ccd = ce_rsm.generar_tabla_coeficientes_ccd(R)
+                st.dataframe(coef_ccd.round(5), use_container_width=True)
+
+            st.markdown("#### Ecuacion de Regresion")
             st.markdown("**Ecuacion (unidades codificadas):**")
             st.code(R['eq_coded'], language=None)
             st.markdown("**Ecuacion (unidades reales):**")
@@ -1878,10 +1893,94 @@ elif st.session_state.stage == 'ccd_diag':
     unidades_ccd = st.session_state.get('unidades_factores', {})
     etiq_ccd = {f: f"{f} ({unidades_ccd[f]})" if unidades_ccd.get(f) else f for f in facc}
 
+    alpha_ccd = float(st.session_state.get('ccd_alfa_val', 0.05))
+    fijos_diag = {
+        f: float(st.session_state.get(f"fijo_{f}", Rs[respc[0]]['coding'][f]['c']))
+        for f in facc
+    }
+
     for r, R in Rs.items():
-        st.markdown(f"### Residuales - {r}")
-        fn = ce_rsm.graf_residuales_ccd(R)
-        st.image(fn, use_container_width=True)
+        st.markdown(f"### Diagnosticos de Efectos y Residuales - {r}")
+        t_par, t_dan, t_int, t_res = st.tabs([
+            "Pareto", "Semi-normal (Daniel)", "Interacciones", "Residuales"
+        ])
+
+        with t_par:
+            if hasattr(ce_rsm, 'graf_pareto_ccd'):
+                usar_full_par = st.checkbox(
+                    "Ver Pareto del modelo completo (todos los terminos)",
+                    value=False,
+                    key=f"ccd_par_full_{r}"
+                )
+                fn_par = ce_rsm.graf_pareto_ccd(R, usar_completo=usar_full_par, alpha=alpha_ccd)
+                if fn_par:
+                    st.image(fn_par, use_container_width=True)
+                _info_box(
+                    "Diagrama de Pareto CCD",
+                    "Muestra la magnitud estandarizada |t| de cada termino lineal, cuadratico (A²) e interaccion. "
+                    "Las barras rojas superan el valor critico.",
+                    tipo='tip'
+                )
+
+        with t_dan:
+            if hasattr(ce_rsm, 'graf_seminormal_ccd'):
+                usar_full_dan = st.checkbox(
+                    "Evaluar sobre todos los terminos del modelo completo (recomendado)",
+                    value=True,
+                    key=f"ccd_dan_full_{r}"
+                )
+                fn_dan = ce_rsm.graf_seminormal_ccd(R, usar_completo=usar_full_dan)
+                if fn_dan:
+                    st.image(fn_dan, use_container_width=True)
+                _info_box(
+                    "Grafico Semi-normal (Daniel)",
+                    "Los terminos significativos se desvian hacia la derecha/arriba respecto a la linea de referencia.",
+                    tipo='tip'
+                )
+
+        with t_int:
+            if hasattr(ce_rsm, 'graf_interacciones_ccd'):
+                usar_full_int = st.checkbox(
+                    "Incluir interacciones eliminadas (modelo completo)",
+                    value=False,
+                    key=f"ccd_int_full_{r}"
+                )
+                terms_int_src = R.get('terms_full', R['terms']) if usar_full_int else R['terms']
+                ints_ccd = [t for t in terms_int_src if '*' in t and t.split('*')[0] != t.split('*')[1]]
+                eje_x_ccd = {}
+                if ints_ccd:
+                    st.markdown("**Elige que factor mostrar en el eje X:**")
+                    cols_ix = st.columns(min(len(ints_ccd), 3))
+                    for idx_i, inter in enumerate(ints_ccd):
+                        fa, fb = inter.split('*')
+                        eje_x_ccd[inter] = cols_ix[idx_i % len(cols_ix)].radio(
+                            f"Eje X para `{inter}`:",
+                            options=[fa, fb],
+                            index=0,
+                            horizontal=True,
+                            key=f"ccd_ejex_{r}_{inter}"
+                        )
+                fns_int = ce_rsm.graf_interacciones_ccd(
+                    R,
+                    unidades=unidades_ccd,
+                    fijos=fijos_diag,
+                    eje_x_por_interaccion=eje_x_ccd,
+                    usar_completo=usar_full_int
+                )
+                if not fns_int:
+                    st.info("El modelo reducido no tiene interacciones de 2 factores. Activa la casilla superior si deseas ver las del modelo completo.")
+                else:
+                    for fn_i in fns_int:
+                        st.image(fn_i, use_container_width=True)
+                _info_box(
+                    "Graficos de interaccion CCD",
+                    "Curvas paralelas indican ausencia de interaccion; curvas que convergen o se cruzan indican interaccion entre ambos factores.",
+                    tipo='tip'
+                )
+
+        with t_res:
+            fn = ce_rsm.graf_residuales_ccd(R)
+            st.image(fn, use_container_width=True)
 
     st.markdown("---")
     st.markdown("### Superficies 3D, Contornos individuales y combinado")
