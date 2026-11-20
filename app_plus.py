@@ -249,7 +249,7 @@ def _limpiar_niveles_y_widgets(factores):
     st.session_state.df_real = None
     st.session_state.df_work = None
     for f in factores:
-        for pref in ('real_low_', 'real_high_', 'low_', 'high_', 'unit_'):
+        for pref in ('real_low_', 'real_high_', 'low_', 'high_', 'unit_', 'qual_low_', 'qual_high_'):
             st.session_state.pop(f"{pref}{f}", None)
 
 
@@ -567,17 +567,26 @@ elif st.session_state.stage == 'encode':
                 guardado = st.session_state.niveles_guardados.get(
                     f, {'low': -1.0, 'high': 1.0, 'unit': ''}
                 )
+                try:
+                    g_low = float(guardado.get('low', -1.0))
+                except (TypeError, ValueError):
+                    g_low = -1.0
+                try:
+                    g_high = float(guardado.get('high', 1.0))
+                except (TypeError, ValueError):
+                    g_high = 1.0
+
                 st.markdown(f"**Factor: {f}**")
                 c1, c2, c3 = st.columns([2, 2, 1.5])
                 v_bajo = c1.number_input(
                     f"Valor real para -1 (bajo) - {f}",
-                    value=float(guardado.get('low', -1.0)),
+                    value=g_low,
                     format="%.4f",
                     key=f"real_low_{f}"
                 )
                 v_alto = c2.number_input(
                     f"Valor real para +1 (alto) - {f}",
-                    value=float(guardado.get('high', 1.0)),
+                    value=g_high,
                     format="%.4f",
                     key=f"real_high_{f}"
                 )
@@ -657,7 +666,7 @@ elif st.session_state.stage == 'encode':
     else:
         _info_box(
             "Matriz NO codificada detectada",
-            "Tu archivo tiene valores reales. Indica/confirma los valores bajo (-1), alto (+1) y sus unidades para generar la matriz codificada (-1, 0, +1), "
+            "Tu archivo tiene valores reales (numericos o cualitativos). Indica/confirma los niveles bajo (-1) y alto (+1) para generar la matriz codificada (-1, 0, +1), "
             "que sera la matriz utilizada para buscar puntos centrales y ejecutar el analisis.",
             tipo='info'
         )
@@ -679,46 +688,104 @@ elif st.session_state.stage == 'encode':
                 st.rerun()
 
         for f in factores:
-            vals = sorted(pd.to_numeric(raw[f], errors='coerce').dropna().unique().tolist())
-            st.markdown(f"**Factor: {f}**")
+            s_no_na = raw[f].dropna()
+            es_cualitativo = bool(pd.to_numeric(s_no_na, errors='coerce').isna().any()) if len(s_no_na) > 0 else False
+            st.markdown(f"**Factor: {f}**" + (" *(cualitativo)*" if es_cualitativo else ""))
 
-            default_low = float(min(vals)) if len(vals) > 0 else 0.0
-            default_high = float(max(vals)) if len(vals) > 0 else 100.0
-            guardado = st.session_state.niveles_guardados.get(
-                f, {'low': default_low, 'high': default_high, 'unit': ''}
-            )
-            c1, c2, c3 = st.columns([2, 2, 1.5])
-            v_bajo = c1.number_input(
-                f"Nivel BAJO (-1) para {f}",
-                value=float(guardado.get('low', default_low)),
-                format="%.4f",
-                key=f"low_{f}"
-            )
-            v_alto = c2.number_input(
-                f"Nivel ALTO (+1) para {f}",
-                value=float(guardado.get('high', default_high)),
-                format="%.4f",
-                key=f"high_{f}"
-            )
-            unidad = c3.text_input(
-                f"Unidad - {f}",
-                value=str(guardado.get('unit', '')),
-                placeholder="ej: ppm, °C, min, %",
-                key=f"unit_{f}"
-            )
+            if es_cualitativo:
+                vals_txt = [str(v).strip() for v in pd.unique(s_no_na)]
+                if len(vals_txt) < 2:
+                    st.error(f"El factor '{f}' debe tener al menos 2 niveles distintos.")
+                    st.stop()
 
-            st.session_state.niveles_guardados[f] = {
-                'low': float(v_bajo),
-                'high': float(v_alto),
-                'unit': unidad.strip()
-            }
-            v_medio = (v_bajo + v_alto) / 2.0
-            suf_u = f" {unidad.strip()}" if unidad.strip() else ""
-            st.caption(f"Centro (0) calculado: **{v_medio:.4f}{suf_u}**")
+                guardado = st.session_state.niveles_guardados.get(f, {})
+                low_guard = str(guardado.get('low', vals_txt[0]))
+                idx_low = vals_txt.index(low_guard) if low_guard in vals_txt else 0
 
-            mapeos_niveles[f] = {v_bajo: -1, v_medio: 0, v_alto: 1}
-            mapeos_inversos[f] = {-1: v_bajo, 0: v_medio, 1: v_alto}
-            unidades_factores[f] = unidad.strip()
+                c1, c2 = st.columns(2)
+                v_bajo = c1.selectbox(
+                    f"Nivel BAJO (-1) para {f}",
+                    options=vals_txt,
+                    index=idx_low,
+                    key=f"qual_low_{f}"
+                )
+                resto = [v for v in vals_txt if v != v_bajo]
+                if len(vals_txt) == 2:
+                    v_alto = resto[0]
+                    c2.text_input(f"Nivel ALTO (+1) para {f}", value=v_alto, disabled=True, key=f"qual_high_ro_{f}")
+                    mapeos_niveles[f] = {v_bajo: -1, v_alto: 1}
+                    mapeos_inversos[f] = {-1: v_bajo, 1: v_alto}
+                else:
+                    high_guard = str(guardado.get('high', resto[-1]))
+                    idx_high = resto.index(high_guard) if high_guard in resto else len(resto) - 1
+                    v_alto = c2.selectbox(
+                        f"Nivel ALTO (+1) para {f}",
+                        options=resto,
+                        index=idx_high,
+                        key=f"qual_high_{f}"
+                    )
+                    m_map = {v_bajo: -1, v_alto: 1}
+                    m_inv = {-1: v_bajo, 1: v_alto}
+                    mids = [v for v in resto if v != v_alto]
+                    if len(mids) == 1:
+                        m_map[mids[0]] = 0
+                        m_inv[0] = mids[0]
+                        st.caption(f"Nivel Centro (0): **{mids[0]}**")
+                    mapeos_niveles[f] = m_map
+                    mapeos_inversos[f] = m_inv
+
+                st.session_state.niveles_guardados[f] = {
+                    'low': v_bajo,
+                    'high': v_alto,
+                    'unit': ''
+                }
+                unidades_factores[f] = ''
+            else:
+                vals = sorted(pd.to_numeric(s_no_na, errors='coerce').dropna().unique().tolist())
+                default_low = float(min(vals)) if len(vals) > 0 else 0.0
+                default_high = float(max(vals)) if len(vals) > 0 else 100.0
+                guardado = st.session_state.niveles_guardados.get(f, {})
+                try:
+                    val_g_low = float(guardado.get('low', default_low))
+                except (TypeError, ValueError):
+                    val_g_low = default_low
+                try:
+                    val_g_high = float(guardado.get('high', default_high))
+                except (TypeError, ValueError):
+                    val_g_high = default_high
+
+                c1, c2, c3 = st.columns([2, 2, 1.5])
+                v_bajo = c1.number_input(
+                    f"Nivel BAJO (-1) para {f}",
+                    value=val_g_low,
+                    format="%.4f",
+                    key=f"low_{f}"
+                )
+                v_alto = c2.number_input(
+                    f"Nivel ALTO (+1) para {f}",
+                    value=val_g_high,
+                    format="%.4f",
+                    key=f"high_{f}"
+                )
+                unidad = c3.text_input(
+                    f"Unidad - {f}",
+                    value=str(guardado.get('unit', '')),
+                    placeholder="ej: ppm, °C, min, %",
+                    key=f"unit_{f}"
+                )
+
+                st.session_state.niveles_guardados[f] = {
+                    'low': float(v_bajo),
+                    'high': float(v_alto),
+                    'unit': unidad.strip()
+                }
+                v_medio = (v_bajo + v_alto) / 2.0
+                suf_u = f" {unidad.strip()}" if unidad.strip() else ""
+                st.caption(f"Centro (0) calculado: **{v_medio:.4f}{suf_u}**")
+
+                mapeos_niveles[f] = {v_bajo: -1, v_medio: 0, v_alto: 1}
+                mapeos_inversos[f] = {-1: v_bajo, 0: v_medio, 1: v_alto}
+                unidades_factores[f] = unidad.strip()
 
         st.session_state.mapeos_niveles = mapeos_niveles
         st.session_state.mapeos_inversos = mapeos_inversos
@@ -727,8 +794,14 @@ elif st.session_state.stage == 'encode':
         df_cod = raw.copy()
         df_real = raw.copy()
         for f in factores:
-            df_cod[f] = _codificar_factor(raw[f], mapeos_inversos[f][-1], mapeos_inversos[f][1]).round(6)
-            df_real[f] = pd.to_numeric(raw[f], errors='coerce')
+            s_no_na = raw[f].dropna()
+            es_cualitativo = bool(pd.to_numeric(s_no_na, errors='coerce').isna().any()) if len(s_no_na) > 0 else False
+            if es_cualitativo:
+                df_cod[f] = raw[f].astype(str).str.strip().map(mapeos_niveles[f]).astype(float)
+                df_real[f] = raw[f].astype(str).str.strip()
+            else:
+                df_cod[f] = _codificar_factor(raw[f], mapeos_inversos[f][-1], mapeos_inversos[f][1]).round(6)
+                df_real[f] = pd.to_numeric(raw[f], errors='coerce')
 
         st.markdown("---")
         st.markdown("### Matriz Codificada (-1, 0, +1) para el Analisis")
@@ -739,9 +812,9 @@ elif st.session_state.stage == 'encode':
         resumen_niveles = pd.DataFrame([
             {
                 'Factor': f,
-                'Nivel Bajo (-1)': mapeos_inversos[f][-1],
-                'Centro (0)': mapeos_inversos[f][0],
-                'Nivel Alto (+1)': mapeos_inversos[f][1],
+                'Nivel Bajo (-1)': mapeos_inversos[f].get(-1, '—'),
+                'Centro (0)': mapeos_inversos[f].get(0, '—'),
+                'Nivel Alto (+1)': mapeos_inversos[f].get(1, '—'),
                 'Unidad': unidades_factores[f] if unidades_factores[f] else '—'
             }
             for f in factores
@@ -1511,48 +1584,62 @@ elif st.session_state.stage == 'results':
 
         pred_cols = st.columns(len(factores))
         niveles = {}
+        def _es_num_pred(v):
+            try:
+                float(v)
+                return not isinstance(v, bool)
+            except (TypeError, ValueError):
+                return False
+
+        pred_cols = st.columns(len(factores))
+        niveles = {}
         for i, f in enumerate(factores):
             u = unidades.get(f, '').strip()
             etiqueta = f"{f} ({u})" if u else f
             suf_u = f" {u}" if u else ""
             mapeo = st.session_state.mapeos_inversos.get(f, {})
             tiene_m = (-1 in mapeo and 1 in mapeo)
+            es_num = tiene_m and _es_num_pred(mapeo[-1]) and _es_num_pred(mapeo[1])
 
-            if "Seleccionar nivel" in modo_pred:
-                if tiene_m:
+            if tiene_m and not es_num:
+                # Factor cualitativo: siempre seleccionar categoria (-1 o +1)
+                opts = [(-1, f"{mapeo[-1]} (-1)")]
+                if 0 in mapeo:
+                    opts.append((0, f"{mapeo[0]} (0)"))
+                opts.append((1, f"{mapeo[1]} (+1)"))
+                sel = pred_cols[i].selectbox(etiqueta, opts, format_func=lambda x: x[1], key=f"pred_{f}")
+                niveles[f] = sel[0]
+            elif "Seleccionar nivel" in modo_pred:
+                if es_num:
                     opts = [
-                        (-1, f"Bajo ({mapeo.get(-1, -1)}{suf_u})"),
-                        (0, f"Centro ({mapeo.get(0, 0)}{suf_u})"),
-                        (1, f"Alto ({mapeo.get(1, 1)}{suf_u})")
+                        (-1, f"Bajo ({mapeo[-1]}{suf_u})"),
+                        (0, f"Centro ({mapeo.get(0, (float(mapeo[-1])+float(mapeo[1]))/2)}{suf_u})"),
+                        (1, f"Alto ({mapeo[1]}{suf_u})")
                     ]
                 else:
-                    opts = [
-                        (-1, "Bajo (-1)"),
-                        (0, "Centro (0)"),
-                        (1, "Alto (+1)")
-                    ]
+                    opts = [(-1, "Bajo (-1)"), (0, "Centro (0)"), (1, "Alto (+1)")]
                 sel = pred_cols[i].selectbox(etiqueta, opts, format_func=lambda x: x[1], key=f"pred_{f}")
                 niveles[f] = sel[0]
             else:
-                if tiene_m:
+                if es_num:
+                    v_lo, v_hi = float(mapeo[-1]), float(mapeo[1])
+                    v_mid = float(mapeo.get(0, (v_lo + v_hi) / 2.0))
                     v_real_in = pred_cols[i].number_input(
                         etiqueta,
-                        value=float(mapeo.get(0, 0.0)),
-                        min_value=float(min(mapeo[-1], mapeo[1])),
-                        max_value=float(max(mapeo[-1], mapeo[1])),
+                        value=v_mid,
+                        min_value=min(v_lo, v_hi),
+                        max_value=max(v_lo, v_hi),
                         key=f"pred_real_{f}"
                     )
-                    rango = (mapeo[1] - mapeo[-1]) / 2.0
-                    niveles[f] = (v_real_in - mapeo[0]) / rango if rango != 0 else 0.0
+                    rango = (v_hi - v_lo) / 2.0
+                    niveles[f] = (v_real_in - v_mid) / rango if rango != 0 else 0.0
                 else:
                     niveles[f] = pred_cols[i].number_input(
                         f"{etiqueta} [codificado]",
-                        value=0.0,
-                        min_value=-1.0,
-                        max_value=1.0,
-                        step=0.1,
+                        value=0.0, min_value=-1.0, max_value=1.0, step=0.1,
                         key=f"pred_cod_{f}"
                     )
+     
         try:
             y_pred = ce.predecir_y_combinacion(niveles, R)
             st.success(f"**Respuesta predicha: {y_pred:.4f}**")
