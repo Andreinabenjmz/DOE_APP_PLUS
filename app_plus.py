@@ -2125,6 +2125,50 @@ elif st.session_state.stage == 'ccd_diag':
                     xlabel=etiq_ccd[xi_r], ylabel=etiq_ccd[yi_r], fijos=fijos)
                 st.image(fn_e, use_container_width=True)
 
+            # Superficies 3D original vs editada, mismos ejes y valores fijos
+            if hasattr(ce_rsm, 'graf_superficie_3d_ccd'):
+                st.caption("Y asi cambian las **superficies 3D** con tu ecuacion editada:")
+                s1, s2 = st.columns(2)
+                with s1:
+                    fn_3o = ce_rsm.graf_superficie_3d_ccd(
+                        R, xi_r, yi_r, titulo=f"{r} - ORIGINAL",
+                        xlabel=etiq_ccd[xi_r], ylabel=etiq_ccd[yi_r], fijos=fijos)
+                    st.image(fn_3o, use_container_width=True)
+                with s2:
+                    fn_3e = ce_rsm.graf_superficie_3d_ccd(
+                        R_edit, xi_r, yi_r, titulo=f"{r} - EDITADO",
+                        xlabel=etiq_ccd[xi_r], ylabel=etiq_ccd[yi_r], fijos=fijos)
+                    st.image(fn_3e, use_container_width=True)
+
+    # Superposicion de contornos: modelo completo original vs TODAS las ecuaciones editadas
+    if ejes_comb_ok:
+        st.markdown("**Superposicion de contornos con tus ecuaciones editadas** "
+                    f"(plano {etiq_ccd[f1]} vs {etiq_ccd[f2]}, mismas metas y valores fijos de arriba):")
+        st.caption("La region blanca es donde TODAS las respuestas cumplen las metas. "
+                   "Si cambiaste coeficientes en los laboratorios de arriba, aqui ves como "
+                   "se mueve (o desaparece) esa zona factible.")
+        Rs_edit = []
+        for r in respc:
+            Rr = Rs[r]
+            ca = ce_rsm.coeficientes_actuales(Rr)
+            ce_r = {'Intercept': float(st.session_state.get(f"lab_b0_{r}", ca['Intercept']))}
+            for t in Rr['terms']:
+                ce_r[t] = float(st.session_state.get(f"lab_{r}_{t}", ca[t]))
+            Rs_edit.append(ce_rsm.R_con_coeficientes_editados(Rr, ce_r))
+        sp1, sp2 = st.columns(2)
+        with sp1:
+            fn_so = ce_rsm.graf_superposicion_ccd(
+                list(Rs.values()), rangos, f1, f2,
+                xlabel=etiq_ccd[f1], ylabel=etiq_ccd[f2], fijos=fijos)
+            st.image(fn_so, use_container_width=True)
+            st.caption("Superposicion ORIGINAL")
+        with sp2:
+            fn_se = ce_rsm.graf_superposicion_ccd(
+                Rs_edit, rangos, f1, f2,
+                xlabel=etiq_ccd[f1], ylabel=etiq_ccd[f2], fijos=fijos)
+            st.image(fn_se, use_container_width=True)
+            st.caption("Superposicion EDITADA")
+
     # ---- Navegacion final CCD ----
     st.markdown("---")
     nav_ccd = st.columns(4)
