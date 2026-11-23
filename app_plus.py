@@ -2065,12 +2065,31 @@ elif st.session_state.stage == 'ccd_diag':
     st.markdown("---")
     st.markdown("### Laboratorio de ecuacion (modifica los coeficientes y observa que pasa)")
     st.info("🧪 **Zona de experimentos.** Aqui puedes cambiar a mano los coeficientes de la "
-            "ecuacion (en **unidades codificadas**) y ver como cambian las predicciones y los "
-            "graficos. **Nada de lo que hagas aqui altera tu modelo ajustado ni los resultados "
+            "ecuacion (en **unidades codificadas**), **quitar terminos** de tu modelo, "
+            "**reincorporar** los que el cribado elimino y **fijar los factores** en los valores "
+            "que quieras, para ver como cambian las predicciones y los graficos. "
+            "**Nada de lo que hagas aqui altera tu modelo ajustado ni los resultados "
             "de las secciones anteriores.**", icon="🧪")
-    st.caption("Idea didactica: cambia el **signo** de un coeficiente para ver como se invierte "
-               "el efecto; pon un coeficiente en **0** para simular eliminar ese termino; "
-               "aumenta un coeficiente **cuadratico** para hacer mas pronunciada la curvatura.")
+    st.caption("Ideas didacticas: cambia el **signo** de un coeficiente para ver como se invierte "
+               "el efecto; **quita** un termino para ver cuanto aportaba (o pon su coeficiente en 0, "
+               "que es equivalente); aumenta un coeficiente **cuadratico** para hacer mas pronunciada "
+               "la curvatura; **reincorpora** un termino que el cribado elimino para ver si de verdad "
+               "aporta; y **fija** un factor (por ejemplo el quitosano en 1.8 %) para estudiar tu "
+               "ecuacion en ese punto, aunque ese factor no este en el modelo original.")
+
+    # Condiciones de evaluacion compartidas (unidades reales)
+    st.markdown("**Condiciones de evaluacion** (unidades reales de cada factor):")
+    st.caption("Estos valores se usan para las predicciones del laboratorio y para fijar los "
+               "factores que NO esten en los ejes de sus graficos. Por ejemplo: fija el quitosano "
+               "en 1.8 % y observa como responde tu ecuacion editada.")
+    lab_fijos = {}
+    lf_cols = st.columns(len(facc))
+    for i, f in enumerate(facc):
+        codf = Rs[respc[0]]['coding'][f]
+        paso = max(codf['half'] / 10, 1e-6)
+        with lf_cols[i]:
+            lab_fijos[f] = st.number_input(etiq_ccd[f], value=float(fijos.get(f, codf['c'])),
+                                           step=paso, format="%.6g", key=f"lab_fijo_{f}")
 
     for r in respc:
         R = Rs[r]
@@ -2080,10 +2099,12 @@ elif st.session_state.stage == 'ccd_diag':
             st.code(ce_rsm.eq_str_manual(R, coefs_act))
 
             with st.form(f"ccd_form_lab_{r}"):
-                st.caption("Cambia los coeficientes que quieras y pulsa **Aplicar cambios**.")
+                st.caption("Cambia coeficientes, quita terminos o reincorpora los que el cribado "
+                           "elimino; luego pulsa **Aplicar cambios**.")
                 ncol_lab = 3
                 cols_lab = st.columns(ncol_lab)
                 coefs_edit = {}
+                fuera_sel = []
                 with cols_lab[0]:
                     coefs_edit['Intercept'] = st.number_input(
                         "Intercepto (b0)", value=float(coefs_act['Intercept']),
@@ -2093,36 +2114,92 @@ elif st.session_state.stage == 'ccd_diag':
                         coefs_edit[t] = st.number_input(
                             f"b({t})", value=float(coefs_act[t]),
                             step=0.01, format="%.6g", key=f"lab_{r}_{t}")
+                        if st.checkbox(f"Quitar {t}", key=f"lab_del_{r}_{t}"):
+                            fuera_sel.append(t)
+
+                # Reincorporar terminos que el cribado elimino
+                faltantes = [t for t in R['terms_full'] if t not in R['terms']]
+                extras_sel = []
+                if faltantes:
+                    alfa_lab = float(st.session_state.get('ccd_alfa', 0.05))
+                    coefs_full = ce_rsm.coeficientes_modelo_completo(R)
+                    pvals_full = ce_rsm.pvalores_modelo_completo(R)
+                    st.markdown("**Reincorporar terminos que el cribado elimino:**")
+                    st.caption("Marca un termino para volver a incluirlo en TU ecuacion editada. "
+                               "Te mostramos el coeficiente y el p-valor que tenia en el modelo "
+                               "completo; puedes quedarte con ese valor o escribir el que quieras. "
+                               "✅ = era significativo (p < alfa) | ❌ = no era significativo.")
+                    for t in faltantes:
+                        pv = pvals_full.get(t, float('nan'))
+                        marca = "✅" if (pv == pv and pv < alfa_lab) else "❌"
+                        c_chk, c_num = st.columns(2)
+                        with c_chk:
+                            chk = st.checkbox(f"Reincorporar {t}  (p = {pv:.4f} {marca})",
+                                              key=f"lab_add_{r}_{t}")
+                        with c_num:
+                            val = st.number_input(f"b({t}) reincorporado",
+                                                  value=float(coefs_full[t]),
+                                                  step=0.01, format="%.6g",
+                                                  key=f"lab_extra_{r}_{t}")
+                        if chk:
+                            extras_sel.append(t)
+                            coefs_edit[t] = float(val)
+                else:
+                    st.caption("Tu modelo ya incluye todos los terminos del modelo completo; "
+                               "no hay terminos eliminados que reincorporar.")
                 st.form_submit_button("Aplicar cambios", type='primary')
 
-            R_edit = ce_rsm.R_con_coeficientes_editados(R, coefs_edit)
+            R_edit = ce_rsm.R_con_coeficientes_editados(
+                R, coefs_edit, terminos_extra=extras_sel, terminos_fuera=fuera_sel)
             st.markdown("**Tu ecuacion editada (unidades codificadas):**")
-            st.code(ce_rsm.eq_str_manual(R, coefs_edit))
+            st.code(ce_rsm.eq_str_manual(R_edit, coefs_edit))
+            avisos = []
+            if fuera_sel:
+                avisos.append(f"quitaste **{', '.join(fuera_sel)}**")
+            if extras_sel:
+                avisos.append(f"reincorporaste **{', '.join(extras_sel)}**")
+            if avisos:
+                st.success("En tu ecuacion editada " + " y ".join(avisos) +
+                           ". Observa como cambian la prediccion y los graficos de abajo.")
+            if len(R_edit['terms']) == 0:
+                st.warning("Quitaste TODOS los terminos: tu ecuacion editada es solo el "
+                           "intercepto (un plano horizontal). Es un buen ejercicio: asi se ve "
+                           "un modelo sin ningun efecto.")
 
-            # Comparacion de predicciones en el punto vivo definido arriba
-            pfull_lab = {f: fijos.get(f, R['coding'][f]['c']) for f in R['factores']}
-            pfull_lab.update(punto_vivo)
+            # Comparacion de predicciones en las condiciones de evaluacion
+            pfull_lab = {f: lab_fijos.get(f, R['coding'][f]['c']) for f in R['factores']}
             y_orig = ce_rsm.predecir_ccd(R, pfull_lab)
             y_edit = ce_rsm.predecir_ccd(R_edit, pfull_lab)
             m1, m2 = st.columns(2)
-            m1.metric(f"Prediccion ORIGINAL de {r} en el punto", f"{y_orig:.4f}")
-            m2.metric(f"Prediccion EDITADA de {r} en el punto", f"{y_edit:.4f}",
-                      delta=f"{y_edit - y_orig:+.4f}")
+            m1.metric(f"Prediccion ORIGINAL de {r} en las condiciones de evaluacion",
+                      f"{y_orig:.4f}")
+            m2.metric(f"Prediccion EDITADA de {r} en las condiciones de evaluacion",
+                      f"{y_edit:.4f}", delta=f"{y_edit - y_orig:+.4f}")
 
-            # Contornos original vs editado, con los mismos ejes elegidos arriba
-            xi_r, yi_r = ejes_ind[r]
-            st.caption(f"Contornos sobre el plano ({etiq_ccd[xi_r]}, {etiq_ccd[yi_r]}), "
-                       "con los mismos valores fijos de las secciones anteriores:")
+            # Ejes de los graficos del laboratorio (independientes por respuesta)
+            xi_def, yi_def = ejes_ind[r]
+            ex1, ex2 = st.columns(2)
+            xi_lab = ex1.selectbox(f"Eje X de los graficos de {r}", facc,
+                                   index=facc.index(xi_def), key=f"lab_ejex_{r}")
+            yi_opts_lab = [f for f in facc if f != xi_lab]
+            yi_lab = ex2.selectbox(f"Eje Y de los graficos de {r}", yi_opts_lab,
+                                   index=(yi_opts_lab.index(yi_def) if yi_def in yi_opts_lab
+                                          else len(yi_opts_lab) - 1),
+                                   key=f"lab_ejey_{r}")
+            fijos_lab = {f: v for f, v in lab_fijos.items() if f not in (xi_lab, yi_lab)}
+
+            st.caption(f"Contornos sobre el plano ({etiq_ccd[xi_lab]}, {etiq_ccd[yi_lab]}), "
+                       "con los demas factores fijos en las condiciones de evaluacion:")
             g1, g2 = st.columns(2)
             with g1:
                 fn_o = ce_rsm.graf_contorno_ccd(
-                    R, xi_r, yi_r, titulo=f"{r} - ORIGINAL",
-                    xlabel=etiq_ccd[xi_r], ylabel=etiq_ccd[yi_r], fijos=fijos)
+                    R, xi_lab, yi_lab, titulo=f"{r} - ORIGINAL",
+                    xlabel=etiq_ccd[xi_lab], ylabel=etiq_ccd[yi_lab], fijos=fijos_lab)
                 st.image(fn_o, use_container_width=True)
             with g2:
                 fn_e = ce_rsm.graf_contorno_ccd(
-                    R_edit, xi_r, yi_r, titulo=f"{r} - EDITADO",
-                    xlabel=etiq_ccd[xi_r], ylabel=etiq_ccd[yi_r], fijos=fijos)
+                    R_edit, xi_lab, yi_lab, titulo=f"{r} - EDITADO",
+                    xlabel=etiq_ccd[xi_lab], ylabel=etiq_ccd[yi_lab], fijos=fijos_lab)
                 st.image(fn_e, use_container_width=True)
 
             # Superficies 3D original vs editada, mismos ejes y valores fijos
@@ -2131,41 +2208,51 @@ elif st.session_state.stage == 'ccd_diag':
                 s1, s2 = st.columns(2)
                 with s1:
                     fn_3o = ce_rsm.graf_superficie_3d_ccd(
-                        R, xi_r, yi_r, titulo=f"{r} - ORIGINAL",
-                        xlabel=etiq_ccd[xi_r], ylabel=etiq_ccd[yi_r], fijos=fijos)
+                        R, xi_lab, yi_lab, titulo=f"{r} - ORIGINAL",
+                        xlabel=etiq_ccd[xi_lab], ylabel=etiq_ccd[yi_lab], fijos=fijos_lab)
                     st.image(fn_3o, use_container_width=True)
                 with s2:
                     fn_3e = ce_rsm.graf_superficie_3d_ccd(
-                        R_edit, xi_r, yi_r, titulo=f"{r} - EDITADO",
-                        xlabel=etiq_ccd[xi_r], ylabel=etiq_ccd[yi_r], fijos=fijos)
+                        R_edit, xi_lab, yi_lab, titulo=f"{r} - EDITADO",
+                        xlabel=etiq_ccd[xi_lab], ylabel=etiq_ccd[yi_lab], fijos=fijos_lab)
                     st.image(fn_3e, use_container_width=True)
 
     # Superposicion de contornos: modelo completo original vs TODAS las ecuaciones editadas
     if ejes_comb_ok:
         st.markdown("**Superposicion de contornos con tus ecuaciones editadas** "
-                    f"(plano {etiq_ccd[f1]} vs {etiq_ccd[f2]}, mismas metas y valores fijos de arriba):")
+                    f"(plano {etiq_ccd[f1]} vs {etiq_ccd[f2]}, mismas metas de arriba y "
+                    "demas factores en las condiciones de evaluacion):")
         st.caption("La region blanca es donde TODAS las respuestas cumplen las metas. "
-                   "Si cambiaste coeficientes en los laboratorios de arriba, aqui ves como "
-                   "se mueve (o desaparece) esa zona factible.")
+                   "Si cambiaste coeficientes, quitaste o reincorporaste terminos en los "
+                   "laboratorios de arriba, aqui ves como se mueve (o desaparece) esa zona factible.")
         Rs_edit = []
         for r in respc:
             Rr = Rs[r]
             ca = ce_rsm.coeficientes_actuales(Rr)
             ce_r = {'Intercept': float(st.session_state.get(f"lab_b0_{r}", ca['Intercept']))}
+            fuera_r = [t for t in Rr['terms'] if st.session_state.get(f"lab_del_{r}_{t}", False)]
             for t in Rr['terms']:
                 ce_r[t] = float(st.session_state.get(f"lab_{r}_{t}", ca[t]))
-            Rs_edit.append(ce_rsm.R_con_coeficientes_editados(Rr, ce_r))
+            extras_r = []
+            cf_r = ce_rsm.coeficientes_modelo_completo(Rr)
+            for t in [x for x in Rr['terms_full'] if x not in Rr['terms']]:
+                if st.session_state.get(f"lab_add_{r}_{t}", False):
+                    extras_r.append(t)
+                    ce_r[t] = float(st.session_state.get(f"lab_extra_{r}_{t}", cf_r[t]))
+            Rs_edit.append(ce_rsm.R_con_coeficientes_editados(
+                Rr, ce_r, terminos_extra=extras_r, terminos_fuera=fuera_r))
+        fijos_sup = {f: v for f, v in lab_fijos.items() if f not in (f1, f2)}
         sp1, sp2 = st.columns(2)
         with sp1:
             fn_so = ce_rsm.graf_superposicion_ccd(
                 list(Rs.values()), rangos, f1, f2,
-                xlabel=etiq_ccd[f1], ylabel=etiq_ccd[f2], fijos=fijos)
+                xlabel=etiq_ccd[f1], ylabel=etiq_ccd[f2], fijos=fijos_sup)
             st.image(fn_so, use_container_width=True)
             st.caption("Superposicion ORIGINAL")
         with sp2:
             fn_se = ce_rsm.graf_superposicion_ccd(
                 Rs_edit, rangos, f1, f2,
-                xlabel=etiq_ccd[f1], ylabel=etiq_ccd[f2], fijos=fijos)
+                xlabel=etiq_ccd[f1], ylabel=etiq_ccd[f2], fijos=fijos_sup)
             st.image(fn_se, use_container_width=True)
             st.caption("Superposicion EDITADA")
 

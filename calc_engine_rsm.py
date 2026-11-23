@@ -571,15 +571,28 @@ class _ModeloSandbox:
         self.params = params
 
 
-def R_con_coeficientes_editados(R, coefs_editados):
+def R_con_coeficientes_editados(R, coefs_editados, terminos_extra=None, terminos_fuera=None):
     """Devuelve una COPIA de R donde los coeficientes (unidades codificadas)
     fueron reemplazados por los de 'coefs_editados' ({'Intercept': x, 'A': x, ...}).
+    - 'terminos_extra': REINCORPORA terminos que el cribado elimino
+      (deben pertenecer al modelo cuadratico completo).
+    - 'terminos_fuera': ELIMINA terminos del modelo de TU ecuacion editada.
     El R original no se modifica."""
+    fuera = set(terminos_fuera or [])
+    extras = [t for t in (terminos_extra or []) if t in R['terms_full'] and t not in R['terms']]
+    terms_new = [t for t in R['terms_full']
+                 if (t in list(R['terms']) + extras) and t not in fuera]
     params = {'Intercept': float(coefs_editados.get('Intercept', R['model'].params['Intercept']))}
-    for t in R['terms']:
+    for t in terms_new:
         pn = _param(t, R['factores'])
-        params[pn] = float(coefs_editados.get(t, R['model'].params[pn]))
+        if t in coefs_editados:
+            params[pn] = float(coefs_editados[t])
+        elif t in R['terms']:
+            params[pn] = float(R['model'].params[pn])
+        else:
+            params[pn] = float(R['model_full'].params.get(pn, 0.0))
     R_edit = dict(R)
+    R_edit['terms'] = terms_new
     R_edit['model'] = _ModeloSandbox(params)
     return R_edit
 
@@ -605,4 +618,13 @@ def coeficientes_actuales(R):
     d = {'Intercept': float(R['model'].params['Intercept'])}
     for t in R['terms']:
         d[t] = float(R['model'].params[_param(t, R['factores'])])
+    return d
+
+
+def coeficientes_modelo_completo(R):
+    """Dict {'A': b, ...} con los coeficientes del MODELO COMPLETO
+    (unidades codificadas), incluidos los terminos que el cribado elimino."""
+    d = {}
+    for t in R['terms_full']:
+        d[t] = float(R['model_full'].params[_param(t, R['factores'])])
     return d
