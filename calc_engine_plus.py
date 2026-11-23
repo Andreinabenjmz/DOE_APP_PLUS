@@ -814,37 +814,57 @@ def _gen_seminormal(R):
     return fn
 
 def _gen_main_effects(R, spec=None, mapeos=None, unidades=None):
+    """Graficos de efectos principales: media de Y en nivel bajo (-1) vs alto (+1)
+    de cada factor. Si hay mapeos, el eje X muestra los valores reales.
+    Si se pasa 'spec' ({'target', 'tol'}), dibuja el objetivo y su banda."""
     nf = len(R['factores'])
     fig, axes = plt.subplots(1, nf, figsize=(4 * nf, 4), sharey=True)
     if nf == 1:
         axes = [axes]
 
-    for i, (ax, f) in enumerate(zip(axes, R['factores'])):
+    for ax, f in zip(axes, R['factores']):
         me = R['main_effects'][f]
         unidad = (unidades or {}).get(f, '').strip()
         etiqueta_f = f"{f} ({unidad})" if unidad else f
 
+        # Si el factor no tiene corridas en -1 o +1, no hay efecto principal que trazar
+        if pd.isna(me['low']) or pd.isna(me['high']):
+            ax.text(0.5, 0.5, f"Sin datos en -1/+1\npara {f}", ha='center', va='center',
+                    transform=ax.transAxes, fontsize=9, color='gray')
+            ax.set_xlabel(etiqueta_f)
+            continue
+
         if mapeos and f in mapeos and -1 in mapeos[f] and 1 in mapeos[f]:
             v_low = mapeos[f][-1]
             v_high = mapeos[f][1]
-            ax.plot([v_low, v_high], [me['low'], me['high']], 'o-', markersize=10, color='#2196F3')
-            y_max = max(float(cond['Y'].max()), float(hi))
-    y_min = min(0.0, float(cond['Y'].min()), float(lo))
-    y_span = max(y_max - y_min, 1e-6)
-    ax.set_ylim(y_min, y_max + 0.16 * y_span)
+            ax.plot([v_low, v_high], [me['low'], me['high']], 'o-',
+                    markersize=10, color='#2196F3', linewidth=2)
+            ax.set_xticks([v_low, v_high])
+        else:
+            ax.plot([-1, 1], [me['low'], me['high']], 'o-',
+                    markersize=10, color='#2196F3', linewidth=2)
+            ax.set_xticks([-1, 1])
 
-    ax.set_xticks(range(len(cond)))
-    ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
-    ax.set_ylabel('Media de Y')
-    ax.set_title('Medias por condicion vs Spec')
-    ax.legend(loc='upper right', framealpha=0.92)
+        ax.axhline(R['y_bar'], color='gray', linestyle=':', linewidth=1.2,
+                   label=f"Media global ({R['y_bar']:.2f})")
 
-    for i, v in enumerate(cond['Y']):
-        ax.text(i, v + 0.015 * y_span, f'{v:.2f}', ha='center', va='bottom', fontsize=8.5, fontweight='bold')
+        if spec is not None:
+            lo = spec['target'] - spec['tol']
+            hi = spec['target'] + spec['tol']
+            ax.axhline(spec['target'], color='green', linestyle='--',
+                       label=f"Objetivo {spec['target']:g}")
+            ax.axhspan(lo, hi, alpha=0.15, color='green',
+                       label=f"Spec [{lo:g}, {hi:g}]")
+
+        ax.set_xlabel(etiqueta_f)
+        ax.set_ylabel('Media de Y')
+        ax.set_title(f'Efecto principal: {f}')
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=8, loc='best')
 
     plt.tight_layout()
-    fn = 'especificacion.png'
-    plt.savefig(fn, bbox_inches='tight')
+    fn = 'efectos_principales.png'
+    plt.savefig(fn, bbox_inches='tight', dpi=150)
     plt.close()
     return fn
 
@@ -1514,5 +1534,4 @@ def _gen_superficie_3d(R, resp_name='Respuesta (Y)', nombres_reales=None,
     plt.savefig(fn, bbox_inches='tight', dpi=150)
     plt.close()
     return fn, x_opt, y_opt, z_opt
-
 

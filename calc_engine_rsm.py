@@ -121,16 +121,28 @@ def _backward_elimination(df, ycol, factores, alpha=0.05):
 # ------------------------------------------------------------------
 # 5. AJUSTE CCD
 # ------------------------------------------------------------------
-def ajustar_ccd(df_raw, factores, ycol, alpha_elim=0.05, eliminar=True):
-    """Ajusta modelo cuadratico por OLS; si eliminar=True aplica backward elimination.
-    Devuelve dict R compatible con la app (anova, R2, effects, eq, etc.)."""
+def ajustar_ccd(df_raw, factores, ycol, alpha_elim=0.05, eliminar=True, terms_manual=None):
+    """Ajusta modelo cuadratico por OLS.
+    - eliminar=True: aplica backward elimination con alpha_elim.
+    - eliminar=False y terms_manual=None: modelo cuadratico completo.
+    - terms_manual=lista de terminos: ajusta exactamente esos terminos (seleccion manual).
+    Devuelve dict R compatible con la app (anova, R2, R2_pred, effects, eq, etc.)."""
     df, coding = codificar(df_raw, factores)
 
     terms_full = terminos_completos(factores)
     fml_full = _formula(ycol, factores, terms_full)
     m_full = smf.ols(fml_full, data=df).fit()
 
-    if eliminar:
+    if terms_manual is not None:
+        desconocidos = [t for t in terms_manual if t not in terms_full]
+        if desconocidos:
+            raise ValueError(f"Terminos no validos para este diseno: {desconocidos}")
+        if len(terms_manual) == 0:
+            raise ValueError("La seleccion manual debe conservar al menos un termino.")
+        # Mantener el orden canonico del modelo completo
+        terms = [t for t in terms_full if t in terms_manual]
+        historial = []
+    elif eliminar:
         terms, historial = _backward_elimination(df, ycol, factores, alpha_elim)
     else:
         terms, historial = list(terms_full), []
@@ -144,6 +156,9 @@ def ajustar_ccd(df_raw, factores, ycol, alpha_elim=0.05, eliminar=True):
     an = an[an['Fuente'] != 'Intercept'].copy()
     an['MS'] = an['SS'] / an['GL']
     an = an[['Fuente', 'SS', 'GL', 'MS', 'F', 'p']]
+    # Nombres legibles: Q("A_c") -> A ; I(Q("A_c") ** 2) -> A*A ; Q("A_c"):Q("B_c") -> A*B
+    _mapa_nombres = {_param(t, factores): t for t in terms_full}
+    an['Fuente'] = an['Fuente'].map(lambda x: _mapa_nombres.get(x, x))
     an['Sig'] = ['OK' if (pd.notna(p) and p < 0.05) else ('-' if pd.isna(p) else 'NO') for p in an['p']]
 
     # Lack of Fit (solo si hay replicas en algun punto del diseno)
@@ -174,11 +189,26 @@ def ajustar_ccd(df_raw, factores, ycol, alpha_elim=0.05, eliminar=True):
     eq_coded = _eq_str(m, terms, factores, coding=None)
     eq_uncoded = _eq_str(m, terms, factores, coding=coding)
 
+    # R2 de prediccion (PRESS, estilo Minitab): que tan bien predice datos NUEVOS
+    ss_tot = float(((df[ycol] - df[ycol].mean()) ** 2).sum())
+    try:
+        infl = m.get_influence()
+        h = np.asarray(infl.hat_matrix_diag)
+        e = np.asarray(m.resid)
+        if np.all((1.0 - h) > 1e-10) and ss_tot > 0:
+            press = float(np.sum((e / (1.0 - h)) ** 2))
+            R2_pred = 1.0 - press / ss_tot
+        else:
+            R2_pred = float('nan')
+    except Exception:
+        R2_pred = float('nan')
+
     R = dict(via=VIA_CCD, k=len(factores), factores=list(factores), respuesta=ycol,
              N=len(df), coding=coding, terms_full=terms_full, terms=terms,
              historial=historial, model=m, model_full=m_full,
              anova=an, R2=float(m.rsquared), R2_adj=float(m.rsquared_adj),
-             S=float(np.sqrt(m.mse_resid)),   # <--- ESTA ES LA LÍNEA NUEVA
+             R2_pred=R2_pred,
+             S=float(np.sqrt(m.mse_resid)),
              lof=lof, effects=effects, y_bar=float(df[ycol].mean()),
              eq_coded=eq_coded, eq_uncoded=eq_uncoded,
              fitted=np.asarray(m.fittedvalues), resid=np.asarray(m.resid),
@@ -492,3 +522,87 @@ def es_diseno_ccd(raw, factores):
     Xc = 2 * (X - lo) / (hi - lo) - 1          # normalizar a [-1, 0, 1]
     axiales = ((np.abs(Xc) > 1e-5).sum(axis=1) == 1).any()
     return bool(axiales) and len(raw) > 2 ** len(factores)
+
+
+# ------------------------------------------------------------------
+# 11. TABLA DE COEFICIENTES (estilo Minitab: Coef, SE, t, p)
+# ------------------------------------------------------------------
+def tabla_coeficientes_ccd(R, alpha=0.05):
+    """Tabla de coeficientes del modelo ajustado, con nombres legibles
+    (A, A*A, A*B) y marca de significancia frente a alpha."""
+    m = R['model']
+    mapa = {_param(t, R['factores']): t for t in terminos_completos(R['factores'])}
+    filas = []
+    for nombre in m.params.index:
+        nombre_bonito = 'Intercepto' if nombre == 'Intercept' else mapa.get(nombre, nombre)
+        pv = float(m.pvalues[nombre])
+        filas.append({
+            'Termino': nombre_bonito,
+            'Coef': round(float(m.params[nombre]), 5),
+            'Error Est.': round(float(m.bse[nombre]), 5),
+            't': round(float(m.tvalues[nombre]), 3),
+            'p': round(pv, 5),
+            'Significativo': ('Si (p < ' + f"{alpha:g}" + ')') if pv < alpha else 'No',
+        })
+    return pd.DataFrame(filas)
+
+
+def pvalores_modelo_completo(R_full):
+    """Devuelve {termino: p} del MODELO COMPLETO, con nombres legibles.
+    Sirve para mostrar el p junto a cada casilla en la seleccion manual."""
+    mapa = {_param(t, R_full['factores']): t for t in terminos_completos(R_full['factores'])}
+    out = {}
+    for nombre, pv in R_full['model_full'].pvalues.items():
+        if nombre == 'Intercept':
+            continue
+        out[mapa.get(nombre, nombre)] = float(pv)
+    return out
+
+
+# ------------------------------------------------------------------
+# 12. LABORATORIO DE ECUACION (sandbox: editar coeficientes sin tocar el modelo)
+# ------------------------------------------------------------------
+class _ModeloSandbox:
+    """Modelo ficticio que solo expone .params, para que las funciones de
+    graficos y prediccion trabajen con coeficientes editados a mano.
+    NO reajusta nada: es una copia de exploracion."""
+
+    def __init__(self, params):
+        self.params = params
+
+
+def R_con_coeficientes_editados(R, coefs_editados):
+    """Devuelve una COPIA de R donde los coeficientes (unidades codificadas)
+    fueron reemplazados por los de 'coefs_editados' ({'Intercept': x, 'A': x, ...}).
+    El R original no se modifica."""
+    params = {'Intercept': float(coefs_editados.get('Intercept', R['model'].params['Intercept']))}
+    for t in R['terms']:
+        pn = _param(t, R['factores'])
+        params[pn] = float(coefs_editados.get(t, R['model'].params[pn]))
+    R_edit = dict(R)
+    R_edit['model'] = _ModeloSandbox(params)
+    return R_edit
+
+
+def eq_str_manual(R, coefs):
+    """Ecuacion legible (unidades codificadas) a partir de un dict de coeficientes."""
+    s = f"Y = {coefs['Intercept']:.4f} "
+    for t in R['terms']:
+        c = float(coefs.get(t, 0.0))
+        partes = t.split('*')
+        if len(partes) == 1:
+            s += f"{c:+.4f}*{t} "
+        elif partes[0] == partes[1]:
+            s += f"{c:+.4f}*{partes[0]}² "
+        else:
+            s += f"{c:+.4f}*{t} "
+    return s.strip()
+
+
+def coeficientes_actuales(R):
+    """Dict {'Intercept': b0, 'A': b1, ...} con los coeficientes actuales
+    del modelo (unidades codificadas), con nombres limpios."""
+    d = {'Intercept': float(R['model'].params['Intercept'])}
+    for t in R['terms']:
+        d[t] = float(R['model'].params[_param(t, R['factores'])])
+    return d

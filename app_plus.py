@@ -1684,49 +1684,111 @@ elif st.session_state.stage == 'ccd_full':
 
 
 elif st.session_state.stage == 'ccd_refine':
-    st.title("CCD - Refinar modelo (eliminacion hacia atras)")
+    st.title("CCD - Refinar modelo (seleccion de terminos)")
     rawc = st.session_state.df_ccd_raw
     facc = st.session_state.factores_ccd
     respc = st.session_state.respuesta_ccd
     unidades_ccd = st.session_state.get('unidades_factores', {})
 
-    _info_box("Eliminacion hacia atras (Backward)",
-              "Puedes aplicar eliminacion automatica (respetando jerarquia: no quita un principal si participa en una interaccion activa) "
-              "o trabajar con el modelo cuadratico completo.",
+    _info_box("Refinamiento del modelo",
+              "Aqui decides que terminos conserva tu modelo cuadratico. Puedes dejar que el programa elimine "
+              "automaticamente los no significativos (backward), quedarte con el modelo completo, o elegir tu mismo "
+              "termino por termino (seleccion manual).",
               tipo='tip')
 
-    alfa = st.number_input("Alfa para eliminacion (p > alfa se elimina)", 0.01, 0.20, 0.05, 0.01, key="ccd_alfa")
+    alfa = st.number_input("Alfa para significancia (un termino con p > alfa es candidato a eliminarse)",
+                           0.01, 0.20, 0.05, 0.01, key="ccd_alfa")
 
-    b1, b2 = st.columns(2)
-    with b1:
+    with st.expander("📖 ¿Que significa eliminar un termino? (Backward y seleccion manual)"):
+        st.markdown("""
+        - **Modelo completo:** incluye todos los terminos (lineales, cuadrados A² e interacciones 2 a 2). Es el punto de partida.
+        - **Eliminacion hacia atras (backward):** el programa quita uno por uno los terminos con `p > alfa`, respetando la jerarquia (no quita un efecto principal si participa en una interaccion o cuadrado que permanece).
+        - **Seleccion manual:** tu marcas/desmarcas los terminos. Junto a cada casilla veras su **valor p del modelo completo**, para decidir sin regresar a la tabla ANOVA: ✅ significativo (`p < alfa`), ❌ no significativo.
+        - **Ojo:** el valor p junto a cada casilla viene del **modelo completo**. Al aplicar tu seleccion, el modelo se reajusta y los p cambian un poco; es normal, porque cada coeficiente se estima de nuevo con menos terminos.
+        """)
+
+    modo_refine = st.radio(
+        "¿Como quieres elegir los terminos?",
+        ["Eliminacion automatica (backward)", "Modelo completo (sin eliminar)", "Seleccion manual (tu eliges)"],
+        horizontal=True, key="ccd_modo_refine"
+    )
+
+    # Garantizar modelos completos (se usan para mostrar los p en el modo manual)
+    if st.session_state.get('R_ccd_full') is None:
+        with st.spinner("Ajustando modelos completos..."):
+            st.session_state.R_ccd_full = {r: ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False) for r in respc}
+
+    if modo_refine.startswith("Eliminacion"):
         if st.button("Aplicar eliminacion hacia atras", type='primary', use_container_width=True):
             with st.spinner("Ajustando..."):
                 Rs = {}
                 for r in respc:
                     Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, alpha_elim=alfa, eliminar=True)
                 st.session_state.R_ccd = Rs
-    with b2:
+
+    elif modo_refine.startswith("Modelo completo"):
         if st.button("Usar modelo completo (sin eliminar)", use_container_width=True):
-            if st.session_state.R_ccd_full:
-                st.session_state.R_ccd = st.session_state.R_ccd_full
+            st.session_state.R_ccd = st.session_state.R_ccd_full
+
+    else:  # Seleccion manual
+        st.markdown("#### Seleccion manual de terminos")
+        st.caption("✅ = significativo (p < alfa) en el modelo completo | ❌ = no significativo. "
+                   "Marca los terminos que quieres CONSERVAR y desmarca los que quieres ELIMINAR.")
+        with st.form("ccd_form_manual"):
+            selecciones = {}
+            for r in respc:
+                R_full_r = st.session_state.R_ccd_full[r]
+                pvals_full = ce_rsm.pvalores_modelo_completo(R_full_r)
+                terms_full = ce_rsm.terminos_completos(facc)
+                vigente = st.session_state.get('R_ccd')
+                default_sel = vigente[r]['terms'] if (vigente and r in vigente) else terms_full
+                st.markdown(f"**Respuesta: {r}**")
+                cols_m = st.columns(3)
+                sel_r = []
+                for i, t in enumerate(terms_full):
+                    pv = pvals_full.get(t, np.nan)
+                    if pd.notna(pv):
+                        marca = "✅" if pv < alfa else "❌"
+                        etiqueta = f"{t} — p = {pv:.4f} {marca}"
+                    else:
+                        etiqueta = f"{t} — p = n/d"
+                    if cols_m[i % 3].checkbox(etiqueta, value=(t in default_sel), key=f"ccd_man_{r}_{t}"):
+                        sel_r.append(t)
+                selecciones[r] = sel_r
+            aplicar_manual = st.form_submit_button("Aplicar seleccion manual", type='primary', use_container_width=True)
+        if aplicar_manual:
+            vacios = [r for r, s in selecciones.items() if len(s) == 0]
+            if vacios:
+                st.error(f"Debes conservar al menos un termino en: {', '.join(vacios)}")
             else:
-                Rs = {}
-                for r in respc:
-                    Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False)
-                st.session_state.R_ccd = Rs
+                with st.spinner("Ajustando modelos con tu seleccion..."):
+                    Rs = {}
+                    for r in respc:
+                        Rs[r] = ce_rsm.ajustar_ccd(rawc, facc, r, eliminar=False, terms_manual=selecciones[r])
+                    st.session_state.R_ccd = Rs
 
     Rs = st.session_state.get('R_ccd') or st.session_state.get('R_ccd_full')
     if Rs:
-        st.session_state.R_ccd = Rs
         for r, R in Rs.items():
             st.markdown("---")
             st.markdown(f"### Respuesta: {r}")
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("S (Error estandar)", f"{np.sqrt(R['model'].mse_resid):.6f}")
             c2.metric("R2", f"{R['R2']*100:.2f}%")
             c3.metric("R2 ajustado", f"{R['R2_adj']*100:.2f}%")
-            c4.metric("Terminos", len(R['terms']))
+            c4.metric("R2 predicho", f"{R['R2_pred']*100:.2f}%" if pd.notna(R.get('R2_pred')) else "-")
+            c5.metric("Terminos", len(R['terms']))
 
+            if R.get('historial'):
+                with st.expander("🧹 Terminos eliminados por el backward (en orden de salida)"):
+                    st.dataframe(
+                        pd.DataFrame(R['historial'], columns=['Termino eliminado', 'p al eliminarse']).round(4),
+                        use_container_width=True)
+
+            st.markdown(f"#### Tabla ANOVA — {r}")
+            _info_box("Analisis de Varianza",
+                      "Descompone la variacion total en las fuentes que la explican. p < alfa = significativo.",
+                      tipo='info')
             st.dataframe(R['anova'].round(4), use_container_width=True)
 
             if R['lof']:
@@ -1745,9 +1807,20 @@ elif st.session_state.stage == 'ccd_refine':
                 - ⚠️ **`p < 0.05` (significativa):** La superficie real tiene un comportamiento que el modelo reducido actual no alcanza a explicar del todo (prueba subir `alfa` o usar el modelo completo).
                 """)
 
-            st.markdown("**Ecuacion (unidades codificadas):**")
+            st.markdown(f"#### Coeficientes del modelo — {r}")
+            _info_box("Coeficientes",
+                      "Son los numeros de tu ecuacion. La columna **p** te dice si cada termino es significativo "
+                      "frente a tu alfa, sin que tengas que regresar al ANOVA.",
+                      tipo='info')
+            try:
+                st.dataframe(ce_rsm.tabla_coeficientes_ccd(R, alpha=alfa), use_container_width=True)
+            except Exception as e:
+                st.warning(f"No se pudieron generar los coeficientes: {e}")
+
+            st.markdown(f"#### Ecuacion de regresion — {r}")
+            st.markdown("**En unidades codificadas (-1, 0, +1):**")
             st.code(R['eq_coded'], language=None)
-            st.markdown("**Ecuacion (unidades reales):**")
+            st.markdown("**En unidades reales:**")
             st.code(R['eq_uncoded'], language=None)
             if any(unidades_ccd.get(f) for f in facc):
                 u_txt = " | ".join(f"{f}: {unidades_ccd[f]}" for f in facc if unidades_ccd.get(f))
@@ -1759,6 +1832,8 @@ elif st.session_state.stage == 'ccd_refine':
             st.session_state.stage = 'ccd_full'
             st.rerun()
         if c2.button("Ir a Diagnosticos, 3D, contornos y optimizacion →", type='primary', use_container_width=True):
+            if st.session_state.get('R_ccd') is None:
+                st.session_state.R_ccd = st.session_state.R_ccd_full
             st.session_state.stage = 'ccd_diag'
             st.rerun()
 
@@ -1984,6 +2059,71 @@ elif st.session_state.stage == 'ccd_diag':
         )
         pred_txt = " | ".join(f"{k} = {v:.4f}" for k, v in opt['predicciones'].items())
         st.success(f"**Mejor punto (deseabilidad = {opt['deseabilidad']:.3f}):** {punto_txt}  →  {pred_txt}")
+
+
+    # ---- Laboratorio de ecuacion (sandbox: NO altera el modelo) ----
+    st.markdown("---")
+    st.markdown("### Laboratorio de ecuacion (modifica los coeficientes y observa que pasa)")
+    st.info("🧪 **Zona de experimentos.** Aqui puedes cambiar a mano los coeficientes de la "
+            "ecuacion (en **unidades codificadas**) y ver como cambian las predicciones y los "
+            "graficos. **Nada de lo que hagas aqui altera tu modelo ajustado ni los resultados "
+            "de las secciones anteriores.**", icon="🧪")
+    st.caption("Idea didactica: cambia el **signo** de un coeficiente para ver como se invierte "
+               "el efecto; pon un coeficiente en **0** para simular eliminar ese termino; "
+               "aumenta un coeficiente **cuadratico** para hacer mas pronunciada la curvatura.")
+
+    for r in respc:
+        R = Rs[r]
+        with st.expander(f"✏️ Modificar la ecuacion de {r}", expanded=False):
+            coefs_act = ce_rsm.coeficientes_actuales(R)
+            st.markdown("**Ecuacion actual del modelo (unidades codificadas):**")
+            st.code(ce_rsm.eq_str_manual(R, coefs_act))
+
+            with st.form(f"ccd_form_lab_{r}"):
+                st.caption("Cambia los coeficientes que quieras y pulsa **Aplicar cambios**.")
+                ncol_lab = 3
+                cols_lab = st.columns(ncol_lab)
+                coefs_edit = {}
+                with cols_lab[0]:
+                    coefs_edit['Intercept'] = st.number_input(
+                        "Intercepto (b0)", value=float(coefs_act['Intercept']),
+                        step=0.01, format="%.6g", key=f"lab_b0_{r}")
+                for i, t in enumerate(R['terms']):
+                    with cols_lab[(i + 1) % ncol_lab]:
+                        coefs_edit[t] = st.number_input(
+                            f"b({t})", value=float(coefs_act[t]),
+                            step=0.01, format="%.6g", key=f"lab_{r}_{t}")
+                st.form_submit_button("Aplicar cambios", type='primary')
+
+            R_edit = ce_rsm.R_con_coeficientes_editados(R, coefs_edit)
+            st.markdown("**Tu ecuacion editada (unidades codificadas):**")
+            st.code(ce_rsm.eq_str_manual(R, coefs_edit))
+
+            # Comparacion de predicciones en el punto vivo definido arriba
+            pfull_lab = {f: fijos.get(f, R['coding'][f]['c']) for f in R['factores']}
+            pfull_lab.update(punto_vivo)
+            y_orig = ce_rsm.predecir_ccd(R, pfull_lab)
+            y_edit = ce_rsm.predecir_ccd(R_edit, pfull_lab)
+            m1, m2 = st.columns(2)
+            m1.metric(f"Prediccion ORIGINAL de {r} en el punto", f"{y_orig:.4f}")
+            m2.metric(f"Prediccion EDITADA de {r} en el punto", f"{y_edit:.4f}",
+                      delta=f"{y_edit - y_orig:+.4f}")
+
+            # Contornos original vs editado, con los mismos ejes elegidos arriba
+            xi_r, yi_r = ejes_ind[r]
+            st.caption(f"Contornos sobre el plano ({etiq_ccd[xi_r]}, {etiq_ccd[yi_r]}), "
+                       "con los mismos valores fijos de las secciones anteriores:")
+            g1, g2 = st.columns(2)
+            with g1:
+                fn_o = ce_rsm.graf_contorno_ccd(
+                    R, xi_r, yi_r, titulo=f"{r} - ORIGINAL",
+                    xlabel=etiq_ccd[xi_r], ylabel=etiq_ccd[yi_r], fijos=fijos)
+                st.image(fn_o, use_container_width=True)
+            with g2:
+                fn_e = ce_rsm.graf_contorno_ccd(
+                    R_edit, xi_r, yi_r, titulo=f"{r} - EDITADO",
+                    xlabel=etiq_ccd[xi_r], ylabel=etiq_ccd[yi_r], fijos=fijos)
+                st.image(fn_e, use_container_width=True)
 
     # ---- Navegacion final CCD ----
     st.markdown("---")
